@@ -1,0 +1,71 @@
+# 双弦投资系统 — 持仓里程碑数据
+# 每个持仓需包含：
+# - code: 股票代码
+# - name: 股票名称
+# - buy_date: 买入日期
+# - buy_price: 买入价格
+# - position_ratio: 持仓比例 (0-1)
+# - current_price: 当前价格 (可选，自动更新)
+# - milestones: 里程碑列表
+# - notes: 备注
+# - circuit_status: 熔断状态 (normal/soft/hard)
+
+holdings:
+  - code: '688004'
+    name: '华丰科技'
+    buy_date: '2024-03-01'
+    buy_price: 28.50
+    position_ratio: 0.15
+    current_price: 31.20
+    milestones:
+      - desc: '通过XX客户认证'
+        deadline: '2024-06-30'
+        completed: false
+        extensions: []
+      - desc: '月产能突破X万套'
+        deadline: '2024-12-31'
+        completed: false
+        extensions: []
+    notes: '军用高速连接器龙头仓位'
+    circuit_status: 'normal'
+
+  - code: '688666'
+    name: '江丰电子'
+    buy_date: '2024-03-15'
+    buy_price: 68.00
+    position_ratio: 0.20
+    current_price: 72.50
+    milestones:
+      - desc: '铜靶通过验证'
+        deadline: '2024-09-30'
+        completed: true
+        completed_date: '2024-06-15'
+        extensions: []
+      - desc: '产能扩张50%'
+        deadline: '2024-12-31'
+        completed: false
+        extensions: []
+    notes: '半导体靶材龙头仓位'
+    circuit_status: 'normal'
+
+  - code: '688122'
+    name: '西部超导'
+    buy_date: '2024-04-01'
+    buy_price: 45.00
+    position_ratio: 0.10
+    current_price: 43.80
+    milestones:
+      - desc: '4T MRI项目立项'
+        deadline: '2024-07-31'
+        completed: true
+        completed_date: '2024-05-15'
+        extensions: []
+      - desc: '新产线投产'
+        deadline: '2024-10-31'
+        completed: false
+        extensions: []
+    notes: '超导材料仓位'
+    circuit_status: 'soft'
+    circuit_reason: '资金加速度连续2日转负'
+
+updated: '2024-06-15T15:30:00'
