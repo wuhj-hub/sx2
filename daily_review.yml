@@ -39,10 +39,11 @@ jobs:
           PUSH_ENABLED: 'true'
           PUSH_TYPE: serverchan
           SEND_KEY: ${{ secrets.SEND_KEY }}
+          PUSH_TOKEN: ${{ secrets.PUSH_TOKEN }}          
           DINGTALK_TOKEN: ${{ secrets.DINGTALK_TOKEN }}
           DINGTALK_SECRET: ${{ secrets.DINGTALK_SECRET }}
           WECHAT_KEY: ${{ secrets.WECHAT_KEY }}
-          OUTPUT_DIR: ./reports
+          OUTPUT_DIR: ./reports          
         run: |
           if [ "${{ github.event.inputs.verbose }}" == "true" ]; then
             python main.py --verbose
