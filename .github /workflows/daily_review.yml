@@ -1,0 +1,44 @@
+name: 资金流每日复盘
+
+on:
+  # 每个交易日 15:35 北京时间运行（UTC 07:35）
+  schedule:
+    - cron: '35 7 * * 1-5'
+  # 支持手动触发（用于测试）
+  workflow_dispatch:
+
+jobs:
+  daily-review:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 设置 Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: 安装依赖
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: 运行复盘脚本
+        env:
+          PUSH_ENABLED: 'true'
+          PUSH_TYPE: serverchan
+          SEND_KEY: ${{ secrets.SEND_KEY }}
+          PUSH_TOKEN: ${{ secrets.PUSH_TOKEN }}
+          OUTPUT_DIR: ./reports
+        run: |
+          python main.py
+
+      - name: 上传报告
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: daily-report-${{ github.run_date }}
+          path: reports/
+          retention-days: 30
