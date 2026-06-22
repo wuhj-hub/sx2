@@ -1,14 +1,19 @@
-name: 资金流每日复盘
+name: 双弦投资系统v2.0 每日复盘
 
 on:
   # 每个交易日 15:35 北京时间运行（UTC 07:35）
   schedule:
     - cron: '35 7 * * 1-5'
-  # 支持手动触发（用于测试）
+  # 支持手动触发
   workflow_dispatch:
+    inputs:
+      target_date:
+        description: '目标日期 YYYY-MM-DD（留空=今天）'
+        required: false
+        default: ''
 
 jobs:
-  daily-review:
+  shuangxian-v2:
     runs-on: ubuntu-latest
     
     steps:
@@ -25,20 +30,31 @@ jobs:
           pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: 运行复盘脚本
+      - name: 运行双弦系统v2.0
         env:
           PUSH_ENABLED: 'true'
           PUSH_TYPE: serverchan
           SEND_KEY: ${{ secrets.SEND_KEY }}
-          PUSH_TOKEN: ${{ secrets.PUSH_TOKEN }}
+          TUSHARE_TOKEN: ${{ secrets.TUSHARE_TOKEN }}
           OUTPUT_DIR: ./reports
+          CACHE_DIR: ./cache
         run: |
-          python main.py
+          ARGS=""
+          if [ -n "${{ github.event.inputs.target_date }}" ]; then
+            ARGS="--date ${{ github.event.inputs.target_date }}"
+          fi
+          python main.py $ARGS
+
+      - name: 获取日期
+        id: date
+        run: echo "report_date=$(date +'%Y%m%d')" >> $GITHUB_OUTPUT
 
       - name: 上传报告
         uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: daily-report-${{ github.run_date }}
-          path: reports/
+          name: shuangxian-report-${{ steps.date.outputs.report_date }}
+          path: |
+            reports/
+            cache/
           retention-days: 30
