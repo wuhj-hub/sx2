@@ -328,7 +328,7 @@ def run_logic_scan(target_date: str = None) -> dict:
             batch = need_update[i:i+batch_size]
             for s in batch:
                 try:
-                    daily = df.get_sina_kline(s['symbol'], scale=240, datalen=1500)
+                    daily = df.get_kline(s['symbol'], scale=240, datalen=1500)
                     if daily.empty or len(daily) < 130:
                         continue
                     
@@ -382,7 +382,7 @@ def run_logic_scan(target_date: str = None) -> dict:
         
         scan_count += 1
         try:
-            daily = df.get_sina_kline(s['symbol'], scale=240, datalen=1500)
+            daily = df.get_kline(s['symbol'], scale=240, datalen=1500)
             if daily.empty or len(daily) < 130:
                 continue
             

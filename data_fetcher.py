@@ -2,8 +2,14 @@
 双弦投资系统 v2.0 — 数据获取层
 ==================================
 Sina财经为主数据源（GitHub Actions稳定可用）
-akshare/push2/datacenter-web/Tushare为备用降级链路
+efinance/akshare/push2/datacenter-web/Tushare为备用降级链路
 逻辑链数据(Sina K线) + 资金流数据(Sina板块/个股)
+
+数据源优先级（按稳定性排序）：
+  K线数据: Sina → efinance(push2his) → akshare
+  行业映射: efinance(get_base_info) → akshare(逐行业) → Sina(板块节点)
+  板块资金流: Sina → push2 → datacenter-web
+  个股资金流: akshare → push2 → Tushare
 """
 
 import time
@@ -26,6 +32,32 @@ except Exception:
     pass
 
 import akshare as ak
+
+try:
+    import efinance as ef
+    HAS_EFINANCE = True
+except ImportError:
+    HAS_EFINANCE = False
+
+# 东方财富行业名 → 申万行业名 映射
+# efinance get_base_info 返回东财行业名(如"酿酒行业")，需映射回申万标准名
+# 才能与 flow_chain.py 的 SW_TO_SINA（申万→Sina）对接
+EM_TO_SW = {
+    '酿酒行业': '食品饮料', '家电行业': '家用电器', '汽车制造': '汽车',
+    '电子信息': '计算机', '电子器件': '电子', '生物制药': '医药生物',
+    '机械行业': '机械设备', '化工行业': '化工', '钢铁行业': '钢铁',
+    '房地产': '房地产', '金融行业': '非银金融', '石油行业': '石油石化',
+    '煤炭行业': '煤炭', '有色金属': '有色金属', '纺织行业': '纺织服装',
+    '建筑建材': '建筑材料', '建材行业': '建筑材料', '建筑装饰': '建筑装饰',
+    '交通运输': '交通运输', '酒店旅游': '社会服务', '商业百货': '商贸零售',
+    '农牧饲渔': '农林牧渔', '电力行业': '公用事业', '环保行业': '环保',
+    '综合行业': '综合', '印刷包装': '轻工制造', '国防军工': '国防军工',
+    '传媒娱乐': '传媒', '宽带提速': '通信', '银行': '银行',
+    '发电设备': '电气设备', '保险': '非银金融', '证券': '非银金融',
+    '多元金融': '非银金融', '采掘行业': '采掘', '旅游酒店': '社会服务',
+    '文教休闲': '休闲服务', '工艺商品': '轻工制造', '农药兽药': '农林牧渔',
+    '塑胶制品': '化工', '玻璃陶瓷': '建筑材料', '珠宝首饰': '轻工制造',
+}
 
 import config
 
@@ -105,6 +137,87 @@ def get_sina_kline(symbol: str, scale: int = 240, datalen: int = 1500) -> pd.Dat
     except Exception as e:
         log.warning(f"Sina K线解析失败 {symbol}: {e}")
         return pd.DataFrame()
+
+
+def _efinance_kline(symbol: str, datalen: int = 1500) -> pd.DataFrame:
+    """
+    efinance K线数据（Sina降级备用）
+    底层用push2his.eastmoney.com，GitHub Actions通常可用
+    
+    symbol: sh600519 / sz300750 等
+    返回格式与get_sina_kline一致
+    """
+    if not HAS_EFINANCE:
+        return pd.DataFrame()
+    try:
+        # efinance用纯数字代码
+        code = symbol[2:] if len(symbol) > 2 else symbol
+        df = ef.stock.get_quote_history(code, klt=101, fqt=1)
+        if df is None or df.empty:
+            return pd.DataFrame()
+        # 统一列名
+        col_map = {
+            '日期': 'day', '开盘': 'open', '收盘': 'close',
+            '最高': 'high', '最低': 'low', '成交量': 'volume',
+        }
+        rename = {k: v for k, v in col_map.items() if k in df.columns}
+        df = df.rename(columns=rename)
+        if 'day' in df.columns:
+            df['day'] = pd.to_datetime(df['day'])
+        for c in ['open', 'high', 'low', 'close', 'volume']:
+            if c in df.columns:
+                df[c] = pd.to_numeric(df[c], errors='coerce')
+        # 只保留需要的列
+        keep = [c for c in ['day', 'open', 'high', 'low', 'close', 'volume'] if c in df.columns]
+        df = df[keep].sort_values('day').tail(datalen).reset_index(drop=True)
+        return df
+    except Exception as e:
+        log.debug(f"efinance K线失败 {symbol}: {e}")
+        return pd.DataFrame()
+
+
+def get_kline(symbol: str, scale: int = 240, datalen: int = 1500) -> pd.DataFrame:
+    """
+    统一K线获取入口（Sina → efinance → akshare 三级降级）
+    scale: 240=日线（目前仅日线用于月线聚合和信号检测）
+    symbol: sh600519 / sz300750 等
+    """
+    # 主源：Sina
+    df = get_sina_kline(symbol, scale=scale, datalen=datalen)
+    if not df.empty:
+        return df
+    
+    # 降级1：efinance
+    if scale == 240:  # 仅日线降级
+        log.debug(f"  Sina K线失败 {symbol}，降级efinance...")
+        df = _efinance_kline(symbol, datalen=datalen)
+        if not df.empty:
+            log.debug(f"  efinance K线成功 {symbol}")
+            return df
+    
+    # 降级2：akshare（最后兜底）
+    log.debug(f"  efinance K线失败 {symbol}，降级akshare...")
+    try:
+        code = symbol[2:] if len(symbol) > 2 else symbol
+        df = _retry(ak.stock_zh_a_hist, symbol=code, period='daily', adjust='qfq')
+        if df is not None and not df.empty:
+            col_map = {
+                '日期': 'day', '开盘': 'open', '收盘': 'close',
+                '最高': 'high', '最低': 'low', '成交量': 'volume',
+            }
+            rename = {k: v for k, v in col_map.items() if k in df.columns}
+            df = df.rename(columns=rename)
+            if 'day' in df.columns:
+                df['day'] = pd.to_datetime(df['day'])
+            for c in ['open', 'high', 'low', 'close', 'volume']:
+                if c in df.columns:
+                    df[c] = pd.to_numeric(df[c], errors='coerce')
+            df = df.sort_values('day').tail(datalen).reset_index(drop=True)
+            return df
+    except Exception as e:
+        log.debug(f"  akshare K线失败 {symbol}: {e}")
+    
+    return pd.DataFrame()
 
 
 def get_sina_realtime_batch(codes: list) -> dict:
@@ -199,13 +312,73 @@ def get_industry_constituents() -> dict:
     获取行业板块成分股 → {行业名: [symbol1, symbol2, ...]}
     同时返回反向映射 → 存入 industry_map.json
     
-    优先使用 akshare 东方财富行业板块接口（更稳定），
-    失败时降级到 Sina 申万行业节点
+    优先级：
+    1. efinance get_base_info（1次批量查询，返回"所处行业"字段，最稳定）
+    2. akshare 逐行业获取成分股（31次API调用，容易连接断开）
+    3. Sina 申万行业板块节点（兜底，31个行业全覆盖）
     """
     industry_map = {}   # symbol → industry_name (key格式: sh600519)
     industry_stocks = {}  # industry_name → [symbols]
     
-    # ── 主源：akshare 东方财富行业板块 ──────────────────
+    # ── 主源1：efinance get_base_info ──────────────────
+    # 优势：1次批量查询获取所有股票的行业，不需要逐行业调用
+    if HAS_EFINANCE:
+        try:
+            log.info("  获取行业分类(efinance get_base_info)...")
+            # 获取股票池所有代码
+            pool = get_stock_pool()
+            codes = [s['code'] for s in pool]
+            
+            # efinance get_base_info 支持批量查询
+            # 分批查询（每批200只，避免单次请求过大）
+            batch_size = 200
+            all_info = []
+            for i in range(0, len(codes), batch_size):
+                batch = codes[i:i+batch_size]
+                try:
+                    info = ef.stock.get_base_info(batch)
+                    if info is not None:
+                        if isinstance(info, pd.DataFrame):
+                            all_info.append(info)
+                        elif isinstance(info, pd.Series):
+                            all_info.append(info.to_frame().T)
+                except Exception as e:
+                    log.debug(f"  efinance批次{i//batch_size+1}失败: {e}")
+            
+            if all_info:
+                info_df = pd.concat(all_info, ignore_index=True)
+                # 列名含"股票代码"和"所处行业"
+                code_col = next((c for c in info_df.columns if '代码' in c), None)
+                ind_col = next((c for c in info_df.columns if '行业' in c), None)
+                
+                if code_col and ind_col:
+                    for _, row in info_df.iterrows():
+                        code = str(row[code_col]).zfill(6)
+                        em_ind_name = str(row[ind_col])
+                        if not code or not em_ind_name or em_ind_name == 'nan':
+                            continue
+                        # 东财行业名 → 申万行业名（与SW_TO_SINA对接）
+                        ind_name = EM_TO_SW.get(em_ind_name, em_ind_name)
+                        prefix = 'sh' if code.startswith('6') else ('sz' if code.startswith(('0','3')) else 'bj')
+                        sym = f'{prefix}{code}'
+                        industry_map[sym] = ind_name
+                        if ind_name not in industry_stocks:
+                            industry_stocks[ind_name] = []
+                        industry_stocks[ind_name].append(sym)
+                    
+                    if len(industry_map) >= 500:
+                        log.info(f"  行业映射(efinance): {len(industry_map)}只股票, {len(industry_stocks)}个行业")
+                        return industry_map, industry_stocks
+                    else:
+                        log.warning(f"  efinance行业映射仅{len(industry_map)}只，降级akshare")
+                else:
+                    log.warning(f"  efinance返回列名异常: {info_df.columns.tolist()}，降级akshare")
+            else:
+                log.warning("  efinance get_base_info返回空，降级akshare")
+        except Exception as e:
+            log.warning(f"  efinance行业分类获取失败: {e}，降级akshare")
+    
+    # ── 主源2：akshare 东方财富行业板块 ──────────────────
     try:
         log.info("  获取行业分类(akshare东方财富)...")
         # 获取所有行业板块名称
@@ -248,17 +421,22 @@ def get_industry_constituents() -> dict:
     except Exception as e:
         log.warning(f"  akshare行业板块获取失败: {e}，降级Sina")
     
-    # ── 降级：Sina 申万行业板块节点 ──────────────────
+    # ── 兜底：Sina 申万行业板块节点（31个全覆盖） ──────
     log.info("  降级获取行业分类(Sina)...")
     industry_nodes = [
         ('sw_gt', '钢铁'), ('sw_jtys', '交通运输'), ('sw_gcls', '建筑装饰'),
         ('sw_jsj', '计算机'), ('sw_dz', '电子'), ('sw_yx', '银行'),
         ('sw_fdc', '房地产'), ('sw_yl', '医药生物'), ('sw_jx', '机械设备'),
         ('sw_qc', '汽车'), ('sw_sy', '商贸零售'), ('sw_hg', '化工'),
-        ('sw_jz', '建筑'), ('sw_dy', '公用事业'), ('sw_ny', '石油石化'),
+        ('sw_jz', '建筑材料'), ('sw_dy', '公用事业'), ('sw_ny', '石油石化'),
         ('sw_jr', '非银金融'), ('sw_sp', '食品饮料'), ('sw_jj', '家用电器'),
         ('sw_mt', '煤炭'), ('sw_youse', '有色金属'), ('sw_gf', '国防军工'),
         ('sw_nlm', '农林牧渔'), ('sw_zh', '综合'),
+        # 补全v2.0缺失的8个行业节点
+        ('sw_dqsb', '电气设备'), ('sw_qgz', '轻工制造'),
+        ('sw_cm', '传媒'), ('sw_hb', '环保'),
+        ('sw_tx', '通信'), ('sw_xxfw', '社会服务'),
+        ('sw_fz', '纺织服装'), ('sw_xxyl', '休闲服务'),
     ]
     
     for node, ind_name in industry_nodes:
@@ -506,10 +684,10 @@ def get_individual_fund_flow_rank(indicator: str = "今日") -> pd.DataFrame:
 # ── 指数/市场数据 ─────────────────────────────────────
 
 def get_index_daily(symbol: str = "sh000001", days: int = 30) -> pd.DataFrame:
-    """指数日线，Sina K线"""
-    df = get_sina_kline(symbol, scale=240, datalen=days+50)
+    """指数日线，统一K线入口（Sina → efinance → akshare）"""
+    df = get_kline(symbol, scale=240, datalen=days+50)
     if df.empty:
-        # 降级akshare
+        # 最后兜底：akshare指数专用接口
         try:
             df = _retry(ak.stock_zh_index_daily, symbol=symbol)
             df = df.rename(columns={

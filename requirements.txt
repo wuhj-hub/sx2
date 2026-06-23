@@ -1,4 +1,5 @@
 akshare>=1.16
+efinance>=0.5.8
 pandas>=1.5
 numpy>=1.24
 requests>=2.28
