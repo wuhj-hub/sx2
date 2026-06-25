@@ -67,9 +67,6 @@ GATE_INDIVIDUAL_FLOW = True     # 候选股当日主力净流入>0
 # ── 推送配置 ────────────────────────────────────────────
 PUSH_TYPE = os.environ.get("PUSH_TYPE", "console")
 PUSH_ENABLED = os.environ.get("PUSH_ENABLED", "false").lower() == "true"
- 
-# PushPlus 配置（主推送）
-PUSHPLUS_TOKEN = os.environ.get("PUSHPLUS_TOKEN", "")
 SEND_KEY = os.environ.get("SEND_KEY", "")
 DINGTALK_TOKEN = os.environ.get("DINGTALK_TOKEN", "")
 DINGTALK_SECRET = os.environ.get("DINGTALK_SECRET", "")
