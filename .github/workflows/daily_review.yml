@@ -34,7 +34,7 @@ jobs:
         env:
           PUSH_ENABLED: 'true'
           PUSH_TYPE: serverchan
-         SEND_KEY: ${{ secrets.SEND_KEY }}
+          SEND_KEY: ${{ secrets.SEND_KEY }}
           TUSHARE_TOKEN: ${{ secrets.TUSHARE_TOKEN }}
           OUTPUT_DIR: ./reports
           CACHE_DIR: ./cache
