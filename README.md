@@ -1,2 +1,2 @@
 # shuangxian
-更新server酱推送为PUSHPLUSH
+20260629更新server酱3和PUSHPLUSH双推送
