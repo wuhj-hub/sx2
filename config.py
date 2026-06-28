@@ -65,12 +65,12 @@ GATE_SECTOR_MATCH = True        # 候选股所属板块当日资金净流入>0
 GATE_INDIVIDUAL_FLOW = True     # 候选股当日主力净流入>0
 
 # ── 推送配置 ────────────────────────────────────────────
-# 主推送通道: PushPlus（一码通）
-PUSH_TYPE = os.environ.get("PUSH_TYPE", "pushplus")
+# 推送通道: both=双通道同时推送 / pushplus=仅PushPlus / serverchan=仅Server酱
+PUSH_TYPE = os.environ.get("PUSH_TYPE", "both")
 PUSH_ENABLED = os.environ.get("PUSH_ENABLED", "true").lower() == "true"
-# PushPlus Token（主通道）
+# PushPlus Token
 PUSHPLUS_TOKEN = os.environ.get("PUSHPLUS_TOKEN", "")
-# Server酱（备用通道，PUSH_TYPE=serverchan 时启用）
+# Server酱 SendKey
 SEND_KEY = os.environ.get("SEND_KEY", "")
 
 # ── 输出 ────────────────────────────────────────────────
