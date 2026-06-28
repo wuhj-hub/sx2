@@ -65,13 +65,13 @@ GATE_SECTOR_MATCH = True        # 候选股所属板块当日资金净流入>0
 GATE_INDIVIDUAL_FLOW = True     # 候选股当日主力净流入>0
 
 # ── 推送配置 ────────────────────────────────────────────
-PUSH_TYPE = os.environ.get("PUSH_TYPE", "console")
-PUSH_ENABLED = os.environ.get("PUSH_ENABLED", "false").lower() == "true"
+# 主推送通道: PushPlus（一码通）
+PUSH_TYPE = os.environ.get("PUSH_TYPE", "pushplus")
+PUSH_ENABLED = os.environ.get("PUSH_ENABLED", "true").lower() == "true"
+# PushPlus Token（主通道）
+PUSHPLUS_TOKEN = os.environ.get("PUSHPLUS_TOKEN", "")
+# Server酱（备用通道，PUSH_TYPE=serverchan 时启用）
 SEND_KEY = os.environ.get("SEND_KEY", "")
-DINGTALK_TOKEN = os.environ.get("DINGTALK_TOKEN", "")
-DINGTALK_SECRET = os.environ.get("DINGTALK_SECRET", "")
-WECHAT_KEY = os.environ.get("WECHAT_KEY", "")
-PUSH_TOKEN = os.environ.get("PUSH_TOKEN", "")
 
 # ── 输出 ────────────────────────────────────────────────
 OUTPUT_DIR = os.environ.get("OUTPUT_DIR", "./reports")
@@ -83,3 +83,12 @@ CACHE_DIR = os.environ.get("CACHE_DIR", "./cache")
 # ── 月线数据回望 ────────────────────────────────────────
 MONTHLY_BARS_NEEDED = 24  # 需要多少根月线来判定牛市(约2年)
 DAILY_BARS_NEEDED = 150   # 日线回望(约7个月)
+
+# ── 底背离买点检测 ──────────────────────────────────────
+# 在月线牛市股票中检测日线MACD底背离，作为补充买入信号
+DIVERGENCE_ENABLED = True          # 是否启用底背离检测
+DIVERGENCE_LOOKBACK = 90           # 回望窗口（交易日），在此范围内寻找底背离
+DIVERGENCE_LOCAL_WINDOW = 5        # 局部极小值窗口（±5根K线）
+DIVERGENCE_MIN_GAP = 8             # 两个低点之间最少间隔（交易日）
+DIVERGENCE_RECOVER_PCT = 0.02     # 确认回升幅度（从第二个低点回升2%以上）
+DIVERGENCE_MACD_TYPE = "histogram" # 背离判断指标: histogram(MACD柱) / dif(DIF线)

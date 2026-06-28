@@ -106,7 +106,7 @@ def _sina_request(url, timeout=15):
 #  逻辑链弦：K线数据（Sina为主）
 # ════════════════════════════════════════════════════════
 
-def get_sina_kline(symbol: str, scale: int = 240, datalen: int = 1500) -> pd.DataFrame:
+def get_sina_kline(symbol: str, scale: int = 240, datalen: int = 600) -> pd.DataFrame:
     """
     Sina财经K线数据
     scale: 240=日线, 60=60分钟
@@ -139,7 +139,7 @@ def get_sina_kline(symbol: str, scale: int = 240, datalen: int = 1500) -> pd.Dat
         return pd.DataFrame()
 
 
-def _efinance_kline(symbol: str, datalen: int = 1500) -> pd.DataFrame:
+def _efinance_kline(symbol: str, datalen: int = 600) -> pd.DataFrame:
     """
     efinance K线数据（Sina降级备用）
     底层用push2his.eastmoney.com，GitHub Actions通常可用
@@ -176,11 +176,12 @@ def _efinance_kline(symbol: str, datalen: int = 1500) -> pd.DataFrame:
         return pd.DataFrame()
 
 
-def get_kline(symbol: str, scale: int = 240, datalen: int = 1500) -> pd.DataFrame:
+def get_kline(symbol: str, scale: int = 240, datalen: int = 600) -> pd.DataFrame:
     """
     统一K线获取入口（Sina → efinance → akshare 三级降级）
     scale: 240=日线（目前仅日线用于月线聚合和信号检测）
     symbol: sh600519 / sz300750 等
+    datalen: 默认600根日线(~2.5年)，月线分析需~530天，日线信号需~130天
     """
     # 主源：Sina
     df = get_sina_kline(symbol, scale=scale, datalen=datalen)

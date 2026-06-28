@@ -1,11 +1,12 @@
 """
-双弦投资系统 v2.0 — 逻辑链弦：月线牛市 + 日线突破选股
+双弦投资系统 v2.0 — 逻辑链弦：月线牛市 + 日线突破 + 底背离买点
 ======================================================
 基于V3.0最优方案（年化+32.97%，5/5达标）：
 1. 月线牛市判定：MACD>0 + 站上MA20 + MA20斜率>0
 2. 日线突破信号：涨停 / 放量半年新高 / 半年新高
-3. 领涨行业优先排序（非硬过滤）
-4. 混合止损：MA20保底 + 8%移动止盈 + 月线转熊退出
+3. 日线MACD底背离买点（新增）：月线牛市股中出现底背离 → 趋势回踩买入信号
+4. 领涨行业优先排序（非硬过滤）
+5. 混合止损：MA20保底 + 8%移动止盈 + 月线转熊退出
 """
 
 import logging
@@ -205,6 +206,170 @@ def detect_daily_signals(daily_df: pd.DataFrame, symbol: str) -> list:
 
 
 # ════════════════════════════════════════════════════════
+#  日线MACD底背离检测
+# ════════════════════════════════════════════════════════
+
+def detect_daily_divergence(daily_df: pd.DataFrame, symbol: str) -> dict:
+    """
+    检测日线MACD底背离信号
+    
+    底背离 = 价格创新低 但 MACD 不创新低，说明下跌动能衰竭，可能反转向上。
+    在月线牛市背景下，底背离是趋势回踩后的优质买点。
+    
+    算法：
+    1. 计算MACD (12,26,9)
+    2. 找到价格局部极小值（波谷），窗口±W根K线
+    3. 比较相邻两个波谷：
+       - 价格: 第二个低点 < 第一个低点（价格新低）
+       - MACD: 第二个低点MACD > 第一个低点MACD（指标不新低）
+    4. 确认价格已从第二个低点回升（避免下跌中途误判）
+    
+    返回: 发现背离时返回信号dict，否则返回None
+    """
+    lookback = config.DIVERGENCE_LOOKBACK
+    window = config.DIVERGENCE_LOCAL_WINDOW
+    min_gap = config.DIVERGENCE_MIN_GAP
+    recover_pct = config.DIVERGENCE_RECOVER_PCT
+    macd_type = config.DIVERGENCE_MACD_TYPE
+    
+    if len(daily_df) < 120:
+        return None
+    
+    close = daily_df['close'].values.astype(float)
+    low = daily_df['low'].values.astype(float)
+    dates = daily_df['day'].values
+    
+    # 只分析最近 lookback 根K线（但MACD计算需要更早的数据预热）
+    start_idx = max(0, len(daily_df) - lookback)
+    
+    # 计算全序列MACD
+    ema12 = _ema(close, 12)
+    ema26 = _ema(close, 26)
+    dif = ema12 - ema26
+    dea = _ema(dif, 9)
+    hist = 2 * (dif - dea)  # MACD柱
+    
+    # 选择背离判断指标
+    if macd_type == "dif":
+        macd_line = dif
+    else:
+        macd_line = hist
+    
+    # 找局部价格极小值（波谷）: low[i]是窗口内最低
+    local_lows = []
+    for i in range(start_idx, len(daily_df)):
+        left = max(0, i - window)
+        right = min(len(daily_df), i + window + 1)
+        if low[i] == np.min(low[left:right]):
+            local_lows.append(i)
+    
+    # 需要至少2个波谷才能比较
+    if len(local_lows) < 2:
+        return None
+    
+    # 从最近的波谷对开始检查（优先最新信号）
+    for j in range(len(local_lows) - 1, 0, -1):
+        i2 = local_lows[j]   # 较新的低点
+        i1 = local_lows[j-1]  # 较旧的低点
+        
+        # 间隔检查：两个低点不能太近也不能太远
+        gap = i2 - i1
+        if gap < min_gap:
+            continue
+        
+        # 第二个低点不能太旧（需在回望窗口内）
+        if len(daily_df) - 1 - i2 > lookback:
+            break
+        
+        # 底背离核心条件：
+        # 1) 价格创新低：第二个低点的最低价 < 第一个低点的最低价
+        price_lower = low[i2] < low[i1]
+        # 2) MACD不创新低：第二个低点的MACD值 > 第一个低点的MACD值
+        macd_higher = macd_line[i2] > macd_line[i1]
+        
+        if not (price_lower and macd_higher):
+            continue
+        
+        # 3) 确认回升：当前价格已从第二个低点回升超过 recover_pct
+        current_price = close[-1]
+        recovery = (current_price - low[i2]) / low[i2] if low[i2] > 0 else 0
+        if recovery < recover_pct:
+            continue
+        
+        # 全部条件满足 → 底背离信号
+        dt = pd.Timestamp(dates[i2])
+        ds = dt.strftime('%Y-%m-%d')
+        pct_change = float((close[-1] - close[-2]) / close[-2] * 100) if close[-2] > 0 else 0
+        
+        return {
+            'date': ds,
+            'signal_type': 'bottom_divergence',
+            'close': float(close[-1]),
+            'pct_change': round(pct_change, 2),
+            'symbol': symbol,
+            'divergence_low': float(low[i2]),
+            'prev_low': float(low[i1]),
+            'macd_at_low': round(float(macd_line[i2]), 4),
+            'macd_at_prev_low': round(float(macd_line[i1]), 4),
+            'recovery_pct': round(float(recovery * 100), 2),
+            'gap_days': int(gap),
+        }
+    
+    return None
+
+
+def scan_divergence_signals(stock_pool: list, bull_stocks: list,
+                            daily_data_cache: dict, industry_map: dict,
+                            target_date: str) -> list:
+    """
+    扫描底背离信号：在月线牛市股票中检测日线MACD底背离
+    
+    底背离 = 价格创新低但MACD不创新低，下跌动能衰竭。
+    月线牛市 + 日线底背离 = 趋势回踩买点（高置信度）。
+    
+    返回: [{'date', 'signal_type', 'code', 'name', 'industry', ...}, ...]
+    """
+    if not config.DIVERGENCE_ENABLED:
+        log.info("  底背离检测: 已禁用")
+        return []
+    
+    log.info(f"  底背离检测: 扫描 {len(bull_stocks)} 只月线牛市股...")
+    divergence_signals = []
+    name_map = {s['symbol']: s.get('name', '') for s in stock_pool}
+    scan_count = 0
+    
+    for s in stock_pool:
+        if s['symbol'] not in bull_stocks:
+            continue
+        
+        scan_count += 1
+        try:
+            # 优先用缓存（月线扫描时已拉取），否则拉取数据
+            if s['symbol'] in daily_data_cache:
+                daily = daily_data_cache[s['symbol']]
+            else:
+                # 底背离检测需要足够长的数据（MACD预热+回望窗口）
+                needed = config.DIVERGENCE_LOOKBACK + 60  # ~150根
+                daily = df.get_kline(s['symbol'], scale=240, datalen=max(needed, 200))
+            
+            if daily.empty or len(daily) < 120:
+                continue
+            
+            div = detect_daily_divergence(daily, s['symbol'])
+            if div:
+                div['code'] = s['code']
+                div['name'] = s.get('name', '') or name_map.get(s['symbol'], '')
+                div['industry'] = industry_map.get(s['symbol'],
+                                        industry_map.get(s['code'], '未知'))
+                divergence_signals.append(div)
+        except Exception as e:
+            log.debug(f"  {s['symbol']} 底背离检测失败: {e}")
+    
+    log.info(f"  底背离扫描: {scan_count}只, 发现信号: {len(divergence_signals)}个")
+    return divergence_signals
+
+
+# ════════════════════════════════════════════════════════
 #  行业牛市状态 + 领涨行业优先排序
 # ════════════════════════════════════════════════════════
 
@@ -322,15 +487,19 @@ def run_logic_scan(target_date: str = None) -> dict:
     
     if need_update:
         log.info(f"  需更新月线牛市: {len(need_update)}只")
+        # 日线数据缓存：月线扫描拉过的K线存起来，日线信号扫描直接复用，避免重复请求
+        daily_data_cache = {}
         # 分批更新，每批50只
         batch_size = 50
         for i in range(0, len(need_update), batch_size):
             batch = need_update[i:i+batch_size]
             for s in batch:
                 try:
-                    daily = df.get_kline(s['symbol'], scale=240, datalen=1500)
+                    daily = df.get_kline(s['symbol'], scale=240)  # 默认600根(~2.5年)
                     if daily.empty or len(daily) < 130:
                         continue
+                    
+                    daily_data_cache[s['symbol']] = daily  # 缓存供日线扫描复用
                     
                     # 月线牛市判定
                     monthly = compute_monthly_bars(daily)
@@ -350,6 +519,8 @@ def run_logic_scan(target_date: str = None) -> dict:
         with open(monthly_bull_path, 'w') as f:
             json.dump(monthly_bull, f, ensure_ascii=False)
         log.info(f"  月线牛市缓存已更新: {len(monthly_bull)}只")
+    else:
+        daily_data_cache = {}
     
     # 4. 当日月线牛市股票
     bull_stocks = []
@@ -382,7 +553,11 @@ def run_logic_scan(target_date: str = None) -> dict:
         
         scan_count += 1
         try:
-            daily = df.get_kline(s['symbol'], scale=240, datalen=1500)
+            # 优先复用月线扫描缓存，否则用datalen=300拉近期数据(日线信号只需~130天)
+            if s['symbol'] in daily_data_cache:
+                daily = daily_data_cache[s['symbol']]
+            else:
+                daily = df.get_kline(s['symbol'], scale=240, datalen=300)
             if daily.empty or len(daily) < 130:
                 continue
             
@@ -401,7 +576,15 @@ def run_logic_scan(target_date: str = None) -> dict:
     
     log.info(f"  日线扫描: {scan_count}只月线牛市股, 今日信号: {len(today_signals)}个")
     
-    # 7. 领涨行业优先排序
+    # 6b. 底背离检测（月线牛市股中检测日线MACD底背离）
+    divergence_signals = scan_divergence_signals(
+        stock_pool, bull_stocks, daily_data_cache, industry_map, target_date
+    )
+    # 为底背离信号补充行业牛市占比
+    for div in divergence_signals:
+        div['ind_bull_ratio'] = current_industry_bull.get(div.get('industry', ''), 0)
+    
+    # 7. 领涨行业优先排序（突破信号）
     if config.INDUSTRY_PRIORITY:
         priority_order = {'limit_up': 0, 'new_high_vol': 1, 'new_high': 2}
         today_signals.sort(key=lambda x: (
@@ -421,18 +604,26 @@ def run_logic_scan(target_date: str = None) -> dict:
     for sig in today_signals:
         signal_summary[sig['signal_type']] += 1
     
+    # 底背离信号按行业牛市占比排序（高的优先）
+    divergence_signals.sort(key=lambda x: (
+        -x.get('ind_bull_ratio', 0),
+        -x.get('recovery_pct', 0)
+    ))
+    
     result = {
         'date': target_date,
         'month_key': mk,
         'monthly_bull_count': len(bull_stocks),
         'signal_count': len(today_signals),
         'signal_summary': dict(signal_summary),
-        'candidates': today_signals[:20],  # 最多20只
+        'candidates': today_signals[:20],  # 最多20只突破候选
+        'divergence_signals': divergence_signals[:20],  # 最多20只底背离候选
+        'divergence_count': len(divergence_signals),
         'industry_status': current_industry_bull,
         'leading_industries': leading_industries[:10],
     }
     
     log.info(f"  信号分布: {dict(signal_summary)}")
-    log.info(f"  候选股: {len(today_signals[:20])}只")
+    log.info(f"  突破候选: {len(today_signals[:20])}只, 底背离: {len(divergence_signals[:20])}只")
     
     return result

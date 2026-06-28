@@ -20,7 +20,7 @@ def generate_daily_report(logic_result: dict, flow_result: dict) -> str:
     lines = []
     lines.append(f"# 双弦系统日报 — {date_str}")
     lines.append(f"> 生成时间: {date_str} {time_str}")
-    lines.append(f"> 逻辑链弦(月线牛市+日线突破V3.0) × 资金流弦(七步复盘) → AND门控")
+    lines.append(f"> 逻辑链弦(月线牛市+日线突破V3.0+底背离买点) × 资金流弦(七步复盘) → AND门控")
     lines.append("")
     
     # ── 逻辑链弦 ──────────────────────────────────────
@@ -84,8 +84,40 @@ def generate_daily_report(logic_result: dict, flow_result: dict) -> str:
     lines.append("---")
     lines.append("")
     
+    # ── 底背离买点 ──────────────────────────────────────
+    divergence_signals = logic_result.get('divergence_signals', [])
+    div_count = logic_result.get('divergence_count', 0)
+    
+    lines.append("## 二、底背离买点信号")
+    lines.append("")
+    if divergence_signals:
+        lines.append(f"在月线牛市股票中发现 **{div_count}只** 出现日线MACD底背离（趋势回踩买点）：")
+        lines.append("")
+        lines.append("| 代码 | 名称 | 行业 | 背离低点日期 | 前低 | 当前低 | 回升% | 间距(天) | 行业牛市占比 |")
+        lines.append("|------|------|------|------------|------|--------|-------|---------|------------|")
+        for d in divergence_signals:
+            lines.append(
+                f"| {d.get('code', '')} "
+                f"| {d.get('name', '')} "
+                f"| {d.get('industry', '')} "
+                f"| {d.get('date', '')} "
+                f"| {d.get('prev_low', 0):.2f} "
+                f"| {d.get('divergence_low', 0):.2f} "
+                f"| {d.get('recovery_pct', 0):.1f}% "
+                f"| {d.get('gap_days', 0)} "
+                f"| {d.get('ind_bull_ratio', 0):.0%} |"
+            )
+        lines.append("")
+        lines.append("> 💡 底背离 = 价格创新低但MACD未新低，下跌动能衰竭，叠加月线牛市背景 → 趋势回踩买点")
+    else:
+        lines.append("*今日无底背离信号*")
+    lines.append("")
+    
+    lines.append("---")
+    lines.append("")
+    
     # ── 资金流弦 ──────────────────────────────────────
-    lines.append("## 二、资金流弦：七步复盘")
+    lines.append("## 三、资金流弦：七步复盘")
     lines.append("")
     
     breath = flow_result.get('breath', {})
@@ -139,7 +171,7 @@ def generate_daily_report(logic_result: dict, flow_result: dict) -> str:
     lines.append("")
     
     # ── AND门控 ──────────────────────────────────────
-    lines.append("## 三、AND门控：两弦共振")
+    lines.append("## 四、AND门控：两弦共振")
     lines.append("")
     
     gate = flow_result.get('and_gate', {})
@@ -208,7 +240,7 @@ def generate_daily_report(logic_result: dict, flow_result: dict) -> str:
     # ── 方法论 ──────────────────────────────────────
     lines.append("## 📌 双弦系统方法论")
     lines.append("")
-    lines.append("> **逻辑链弦**: 月线牛市定方向 + 领涨行业优先 + 日线突破定入场")
+    lines.append("> **逻辑链弦**: 月线牛市定方向 + 领涨行业优先 + 日线突破定入场 + 底背离找回踩买点")
     lines.append("> **资金流弦**: 市场非冷区 + 板块资金正流入 + 个股主力正流入")
     lines.append("> **AND门控**: 两弦信号对齐才操作，缺一不可")
     lines.append("> **止损**: MA20保底 + 8%移动止盈 + 月线转熊退出 + 60日最长持有")
@@ -239,11 +271,16 @@ def generate_push_content(logic_result: dict, flow_result: dict) -> tuple:
     
     sig_desc = {'limit_up': '涨停', 'new_high_vol': '放量新高', 'new_high': '半年新高'}
     
+    divergence_signals = logic_result.get('divergence_signals', [])
+    
     if breath.get('status') == '冷区':
         title = f"🚨 双弦日报 — 冷区不动"
     elif gated:
         names = [c.get('name', c.get('code', '')) for c in gated[:5]]
         title = f"🎯 双弦共振 — {len(gated)}只可操作 ({', '.join(names)})"
+    elif divergence_signals:
+        div_names = [d.get('name', d.get('code', '')) for d in divergence_signals[:3]]
+        title = f"🔻 双弦日报 — {len(divergence_signals)}只底背离 ({', '.join(div_names)})"
     else:
         title = f"📊 双弦日报 — 无共振信号"
     
@@ -267,6 +304,15 @@ def generate_push_content(logic_result: dict, flow_result: dict) -> tuple:
         lines.append(f"  领涨: {ind_str}")
     lines.append("")
     
+    # 底背离摘要
+    divergence_signals = logic_result.get('divergence_signals', [])
+    div_count = logic_result.get('divergence_count', 0)
+    if divergence_signals:
+        lines.append(f"**🔻 底背离买点**: {div_count}只月线牛市股出现日线MACD底背离")
+        for d in divergence_signals[:5]:
+            lines.append(f"  - {d.get('name', d.get('code', ''))} | {d.get('industry', '')} | 回升{d.get('recovery_pct', 0):.1f}% | 间距{d.get('gap_days', 0)}天")
+        lines.append("")
+    
     # 资金流摘要
     lines.append(f"**资金流**: 市场{breath.get('status', 'N/A')}, 成交额比{breath.get('amount_ratio', 0):.2%}")
     hot = flow_result.get('sector_flow', {}).get('hot_sectors', [])[:3]
@@ -285,8 +331,11 @@ def generate_push_content(logic_result: dict, flow_result: dict) -> tuple:
             lines.append(f"  - {c.get('name', c.get('code', ''))} | {st} | {c.get('industry', '')} | 涨跌{c.get('pct_change', 0):.1f}%")
         lines.append("")
         lines.append("⚠️ 次日开盘价买入(T+1), MA20止损+8%移动止盈+月线转熊退出")
+    elif divergence_signals:
+        lines.append("今日无共振信号，但有底背离买点值得关注：")
+        lines.append("  底背离信号可作为逢低布局参考，建议结合资金流人工确认后操作")
     else:
-        lines.append("今日无共振信号，不操作。")
+        lines.append("今日无共振信号，无底背离信号，不操作。")
     
     content = '\n'.join(lines)
     return title, content
