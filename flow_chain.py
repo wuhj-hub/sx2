@@ -134,53 +134,105 @@ def step2_index_direction() -> dict:
 
 
 def step3_sector_flow() -> dict:
-    """板块资金流热力图"""
-    log.info("  [资金流弦] 第三步：板块资金流")
-    try:
-        sector_flow = df.get_sector_fund_flow(indicator="今日")
-    except Exception as e:
-        log.warning(f"  板块资金流获取失败: {e}")
-        return {'hot_sectors': [], 'cold_sectors': [], 'sector_net_flow': {}}
+    """板块资金流热力图（增强版：多周期全景）"""
+    log.info("  [资金流弦] 第三步：板块资金流（多周期全景）")
     
-    if sector_flow.empty:
-        return {'hot_sectors': [], 'cold_sectors': [], 'sector_net_flow': {}}
+    # 尝试获取多周期板块资金流
+    heatmap_df = pd.DataFrame()
+    if config.HEATMAP_ENABLED:
+        try:
+            heatmap_df = df.get_sector_flow_multi_period()
+        except Exception as e:
+            log.warning(f"  多周期板块资金流获取失败: {e}")
     
-    # 构建板块净流入映射（Sina返回元，转亿）
+    # 如果多周期获取失败，降级到单周期
+    if heatmap_df.empty:
+        log.info("  降级到单周期板块资金流...")
+        try:
+            sector_flow = df.get_sector_fund_flow(indicator="今日")
+        except Exception as e:
+            log.warning(f"  板块资金流获取失败: {e}")
+            return {'hot_sectors': [], 'cold_sectors': [], 'sector_net_flow': {}, 'heatmap': pd.DataFrame()}
+        
+        if sector_flow.empty:
+            return {'hot_sectors': [], 'cold_sectors': [], 'sector_net_flow': {}, 'heatmap': pd.DataFrame()}
+        
+        # 构建板块净流入映射
+        sector_net_flow = {}
+        cols = sector_flow.columns.tolist()
+        name_col = next((c for c in cols if '名称' in c or '行业' in c), cols[1] if len(cols) > 1 else None)
+        flow_col = next((c for c in cols if '净流入' in c and '净额' in c), None)
+        pct_col = next((c for c in cols if '涨跌幅' in c or '涨跌' in c), None)
+        
+        hot = []
+        cold = []
+        
+        if name_col and flow_col:
+            for _, row in sector_flow.iterrows():
+                name = str(row.get(name_col, ''))
+                net_flow = 0
+                try:
+                    net_flow = float(str(row.get(flow_col, '0')).replace(',', '').replace('亿', ''))
+                except (ValueError, TypeError):
+                    pass
+                pct = 0
+                if pct_col:
+                    try:
+                        pct = float(str(row.get(pct_col, '0')).replace('%', '').replace(',', ''))
+                    except (ValueError, TypeError):
+                        pass
+                
+                net_flow_yi = net_flow / 1e8
+                sector_net_flow[name] = net_flow_yi
+                entry = {'name': name, 'net_flow': net_flow_yi, 'pct': pct}
+                if net_flow > 0:
+                    hot.append(entry)
+                else:
+                    cold.append(entry)
+        
+        hot = sorted(hot, key=lambda x: x['net_flow'], reverse=True)[:10]
+        cold = sorted(cold, key=lambda x: x['net_flow'])[:10]
+        
+        log.info(f"  热门板块 TOP3: {[s['name'] for s in hot[:3]]}")
+        
+        return {
+            'hot_sectors': hot,
+            'cold_sectors': cold,
+            'sector_net_flow': sector_net_flow,
+            'heatmap': pd.DataFrame(),
+        }
+    
+    # 多周期数据成功，从中提取各字段
     sector_net_flow = {}
-    cols = sector_flow.columns.tolist()
-    name_col = next((c for c in cols if '名称' in c or '行业' in c), cols[1] if len(cols) > 1 else None)
-    flow_col = next((c for c in cols if '净流入' in c and '净额' in c), None)
-    pct_col = next((c for c in cols if '涨跌幅' in c or '涨跌' in c), None)
-    
     hot = []
     cold = []
     
-    if name_col and flow_col:
-        for _, row in sector_flow.iterrows():
-            name = str(row.get(name_col, ''))
-            net_flow = 0
-            try:
-                net_flow = float(str(row.get(flow_col, '0')).replace(',', '').replace('亿', ''))
-            except (ValueError, TypeError):
-                pass
-            pct = 0
-            if pct_col:
-                try:
-                    pct = float(str(row.get(pct_col, '0')).replace('%', '').replace(',', ''))
-                except (ValueError, TypeError):
-                    pass
-            
-            # Sina净流入单位统一是元，转亿
-            net_flow_yi = net_flow / 1e8
-            sector_net_flow[name] = net_flow_yi
-            entry = {'name': name, 'net_flow': net_flow_yi, 'pct': pct}
-            if net_flow > 0:
-                hot.append(entry)
-            else:
-                cold.append(entry)
+    for _, row in heatmap_df.iterrows():
+        name = str(row.get('名称', ''))
+        # 今日净流入（元→亿）
+        today_flow = float(row.get('今日_净流入', 0)) / 1e8
+        pct = float(row.get('今日_涨跌', 0))
+        direction = row.get('方向', '➖')
+        total_flow = float(row.get('累计净流入', 0)) / 1e8
+        
+        sector_net_flow[name] = today_flow
+        
+        # 3/5/10日数据
+        d3 = float(row.get('3日_净流入', 0)) / 1e8
+        d5 = float(row.get('5日_净流入', 0)) / 1e8
+        d10 = float(row.get('10日_净流入', 0)) / 1e8
+        
+        entry = {
+            'name': name, 'net_flow': today_flow, 'pct': pct,
+            'd3': d3, 'd5': d5, 'd10': d10, 'total': total_flow, 'direction': direction,
+        }
+        if today_flow > 0:
+            hot.append(entry)
+        else:
+            cold.append(entry)
     
-    hot = sorted(hot, key=lambda x: x['net_flow'], reverse=True)[:10]
-    cold = sorted(cold, key=lambda x: x['net_flow'])[:10]
+    hot = sorted(hot, key=lambda x: x['net_flow'], reverse=True)[:config.HEATMAP_TOP_N]
+    cold = sorted(cold, key=lambda x: x['net_flow'])[:5]
     
     log.info(f"  热门板块 TOP3: {[s['name'] for s in hot[:3]]}")
     
@@ -188,6 +240,7 @@ def step3_sector_flow() -> dict:
         'hot_sectors': hot,
         'cold_sectors': cold,
         'sector_net_flow': sector_net_flow,
+        'heatmap': heatmap_df,
     }
 
 
@@ -244,6 +297,179 @@ def step4_individual_flow(codes: list = None) -> dict:
         'individual_net_flow': individual_net_flow,
         'top_inflow': top_inflow,
     }
+
+
+# ════════════════════════════════════════════════════════
+#  个股多周期资金验证
+# ════════════════════════════════════════════════════════
+
+def step5_multi_period_flow(candidates: list) -> dict:
+    """
+    获取候选股的多周期(3/5/10/20日)主力净流入
+    返回: {code: {'3d': float, '5d': float, '10d': float, '20d': float, 'signal': str}}
+    """
+    if not config.MULTI_PERIOD_ENABLED or not candidates:
+        return {}
+    
+    log.info(f"  [多周期] 获取{len(candidates)}只候选股的多周期资金流")
+    result = {}
+    
+    for cand in candidates:
+        code = cand.get('code', '')
+        if not code:
+            continue
+        try:
+            periods = df.get_stock_fund_flow_periods(code)
+            # 判断方向信号
+            vals = [periods.get(f'{d}d', 0) for d in config.MULTI_PERIOD_DAYS]
+            if all(v > 0 for v in vals):
+                signal = '📈'  # 全部流入
+            elif all(v < 0 for v in vals):
+                signal = '📉'  # 全部流出
+            elif vals[0] > 0 and vals[-1] < 0:
+                signal = '⚡'  # 短期新进场
+            elif vals[0] < 0 and vals[-1] > 0:
+                signal = '🔄'  # 短期流出但长期仍在流入
+            else:
+                signal = '⚠️'  # 混合
+            
+            periods['signal'] = signal
+            result[code] = periods
+            log.info(f"    {cand.get('name', code)}: 3D={periods['3d']/1e8:.2f}亿 20D={periods['20d']/1e8:.2f}亿 {signal}")
+        except Exception as e:
+            log.warning(f"    {code} 多周期获取失败: {e}")
+            result[code] = {f'{d}d': 0 for d in config.MULTI_PERIOD_DAYS}
+            result[code]['signal'] = '❓'
+    
+    return result
+
+
+# ════════════════════════════════════════════════════════
+#  三层共振评分
+# ════════════════════════════════════════════════════════
+
+def calc_three_layer_resonance(temperature: dict, sector_flow: dict, 
+                                candidates: list, multi_period: dict) -> dict:
+    """
+    三层共振评分：大盘 + 板块 + 个股 三层趋势同向打分
+    每层: +1(向上) / 0(中性) / -1(向下)
+    总分: -3 ~ +3
+    
+    大盘层: 温度计>=60 → +1, 40-59 → 0, <40 → -1
+    板块层: 候选股所属板块3日/5日净流入>0 → +1, 混合 → 0, 全流出 → -1
+    个股层: 个股3日/5日/10日主力净流入>0 → +1, 混合 → 0, 全流出 → -1
+    
+    返回: {code: {'market_layer': int, 'sector_layer': int, 'stock_layer': int,
+                  'resonance_score': int, 'label': str}}
+    """
+    if not config.RESONANCE_ENABLED or not candidates:
+        return {}
+    
+    log.info("  [共振分] 计算三层共振评分")
+    
+    # ── 大盘层 ──
+    market_layer = 0
+    if temperature and temperature.get('score') is not None:
+        score = temperature['score']
+        if score >= 60:
+            market_layer = 1
+        elif score < 40:
+            market_layer = -1
+        else:
+            market_layer = 0
+    
+    # ── 板块层 & 个股层 ──
+    result = {}
+    sector_net_flow = sector_flow.get('sector_net_flow', {})
+    
+    for cand in candidates:
+        code = cand.get('code', '')
+        industry = cand.get('industry', '')
+        sina_industry = _map_industry_to_sina(industry)
+        
+        # 板块层：看所属板块3日/5日净流入
+        sector_layer = 0
+        # 从hot_sectors获取板块多周期数据
+        hot_sectors = sector_flow.get('hot_sectors', [])
+        cold_sectors = sector_flow.get('cold_sectors', [])
+        
+        sector_found = False
+        for s in hot_sectors + cold_sectors:
+            if s.get('name') == sina_industry or sina_industry in s.get('name', ''):
+                d3 = s.get('d3', 0)
+                d5 = s.get('d5', 0)
+                if d3 > 0 and d5 > 0:
+                    sector_layer = 1
+                elif d3 < 0 and d5 < 0:
+                    sector_layer = -1
+                else:
+                    sector_layer = 0
+                sector_found = True
+                break
+        
+        # 如果板块全景数据中没有，用今日净流入判断
+        if not sector_found:
+            net = sector_net_flow.get(sina_industry, 0)
+            if net > 0:
+                sector_layer = 1
+            elif net < 0:
+                sector_layer = -1
+        
+        # ── 个股层 ──
+        stock_layer = 0
+        mp = multi_period.get(code, {})
+        vals = [mp.get('3d', 0), mp.get('5d', 0), mp.get('10d', 0)]
+        if all(v > 0 for v in vals):
+            stock_layer = 1
+        elif all(v < 0 for v in vals):
+            stock_layer = -1
+        
+        # ── 汇总 ──
+        resonance_score = market_layer + sector_layer + stock_layer
+        
+        if resonance_score >= 2:
+            label = '🟢强共振'
+        elif resonance_score == 1:
+            label = '🟡偏多'
+        elif resonance_score == 0:
+            label = '⚪中性'
+        elif resonance_score == -1:
+            label = '🟠偏空'
+        else:
+            label = '🔴逆势'
+        
+        result[code] = {
+            'market_layer': market_layer,
+            'sector_layer': sector_layer,
+            'stock_layer': stock_layer,
+            'resonance_score': resonance_score,
+            'label': label,
+        }
+        log.info(f"    {cand.get('name', code)}: 大盘{market_layer:+d} + 板块{sector_layer:+d} + 个股{stock_layer:+d} = {resonance_score} {label}")
+    
+    return result
+
+
+# ════════════════════════════════════════════════════════
+#  主线军捕获器（集成步骤）
+# ════════════════════════════════════════════════════════
+
+def step6_main_line_dragon() -> list:
+    """
+    主线军捕获器：扫描近期启动板块 + 识别板块内龙头
+    调用 data_fetcher.get_main_line_sectors()
+    """
+    if not config.DRAGON_ENABLED:
+        return []
+    
+    log.info("  [资金流弦] 第六步：主线军捕获器")
+    try:
+        main_lines = df.get_main_line_sectors(lookback_days=config.DRAGON_LOOKBACK_DAYS)
+        log.info(f"  主线军: {len(main_lines)}个启动板块")
+        return main_lines
+    except Exception as e:
+        log.error(f"  主线军捕获器失败: {e}")
+        return []
 
 
 # ════════════════════════════════════════════════════════
@@ -347,16 +573,20 @@ def run_and_gate(logic_candidates: list, breath: dict, sector_data: dict,
 #  资金流弦主流程
 # ════════════════════════════════════════════════════════
 
-def run_flow_scan(logic_candidates: list = None) -> dict:
+def run_flow_scan(logic_candidates: list = None, temperature: dict = None) -> dict:
     """
-    资金流弦扫描 + AND门控
+    资金流弦扫描 + AND门控 + 三层共振 + 主线军捕获
     logic_candidates: 逻辑链弦输出的候选股列表
+    temperature: 市场温度数据（用于三层共振评分）
     
     返回: {
         'breath': dict,
         'index_direction': dict,
         'sector_flow': dict,
         'individual_flow': dict,
+        'multi_period': dict,
+        'resonance_scores': dict,
+        'main_line_dragons': list,
         'and_gate': dict,
     }
     """
@@ -370,6 +600,24 @@ def run_flow_scan(logic_candidates: list = None) -> dict:
     # 个股资金流（如果逻辑链有候选股，优先关注它们）
     candidate_codes = [c.get('code', '') for c in (logic_candidates or [])]
     individual_flow = step4_individual_flow(codes=candidate_codes)
+    
+    # 多周期资金验证（对候选股）
+    multi_period = {}
+    if logic_candidates:
+        multi_period = step5_multi_period_flow(logic_candidates)
+    
+    # ── 三层共振评分（v2.2新增）──
+    resonance_scores = {}
+    if logic_candidates:
+        resonance_scores = calc_three_layer_resonance(
+            temperature=temperature,
+            sector_flow=sector_flow,
+            candidates=logic_candidates,
+            multi_period=multi_period,
+        )
+    
+    # ── 主线军捕获器（v2.2新增）──
+    main_line_dragons = step6_main_line_dragon()
     
     # AND门控
     gate_result = {
@@ -391,5 +639,8 @@ def run_flow_scan(logic_candidates: list = None) -> dict:
         'index_direction': index_dir,
         'sector_flow': sector_flow,
         'individual_flow': individual_flow,
+        'multi_period': multi_period,
+        'resonance_scores': resonance_scores,
+        'main_line_dragons': main_line_dragons,
         'and_gate': gate_result,
     }

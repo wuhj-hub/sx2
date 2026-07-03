@@ -1,7 +1,8 @@
 """
-双弦投资系统 v2.0 — 配置文件
+双弦投资系统 v2.2 — 配置文件
 ==================================
 逻辑链弦(月线牛市+日线突破V3.0) + 资金流弦(七步复盘+三重确认)
++ 资金沉淀率 + 三层共振评分 + 主线军捕获器
 AND门控：两弦信号对齐才推送操作信号
 """
 
@@ -84,6 +85,10 @@ CACHE_DIR = os.environ.get("CACHE_DIR", "./cache")
 MONTHLY_BARS_NEEDED = 24  # 需要多少根月线来判定牛市(约2年)
 DAILY_BARS_NEEDED = 150   # 日线回望(约7个月)
 
+# ── 推送价格筛选 ──────────────────────────────────────────
+# 推送结果中只显示股价≤MAX_PRICE的股票（过滤高价股，聚焦中小盘低价标的）
+MAX_PRICE = float(os.environ.get("MAX_PRICE", "10"))
+
 # ── 底背离买点检测 ──────────────────────────────────────
 # 在月线牛市股票中检测日线MACD底背离，作为补充买入信号
 DIVERGENCE_ENABLED = True          # 是否启用底背离检测
@@ -92,3 +97,34 @@ DIVERGENCE_LOCAL_WINDOW = 5        # 局部极小值窗口（±5根K线）
 DIVERGENCE_MIN_GAP = 8             # 两个低点之间最少间隔（交易日）
 DIVERGENCE_RECOVER_PCT = 0.02     # 确认回升幅度（从第二个低点回升2%以上）
 DIVERGENCE_MACD_TYPE = "histogram" # 背离判断指标: histogram(MACD柱) / dif(DIF线)
+
+# ── 市场温度计 ──────────────────────────────────────────
+# 0-100分量化市场冷暖，作为推送首行信息
+THERMOMETER_ENABLED = True
+THERMOMETER_INDEX = "sh000300"  # 温度计使用的指数（沪深300）
+
+# ── 板块资金全景扫描 ──────────────────────────────────────
+# 多日累计控盘度排序，展示板块资金流全景
+HEATMAP_ENABLED = True
+HEATMAP_TOP_N = 10  # 显示TOP N流入板块
+
+# ── 多周期资金验证 ──────────────────────────────────────
+# 为每只候选股显示3/5/10/20日四个周期主力净流入
+MULTI_PERIOD_ENABLED = True
+MULTI_PERIOD_DAYS = [3, 5, 10, 20]  # 验证周期
+
+# ── 资金沉淀率 ──────────────────────────────────────────
+# 沉淀率 = 3日主力净流入 / 3日总成交额，越高表示主力锁仓意愿越强
+SEDIMENTATION_ENABLED = True
+
+# ── 三层共振分 ──────────────────────────────────────────
+# 大盘+板块+个股三层趋势同向打分，+1/0/-1 求和得 -3~+3
+RESONANCE_ENABLED = True
+
+# ── 主线军捕获器 ─────────────────────────────────────────
+# 扫描近N日启动的主线板块，输出板块内龙头（资金沉淀率最高）
+DRAGON_ENABLED = True
+DRAGON_LOOKBACK_DAYS = 3       # 板块近N日启动
+DRAGON_TOP_SECTORS = 5         # 显示TOP N主线板块
+DRAGON_LEADERS_PER_SECTOR = 5  # 每个板块内TOP N龙头
+DRAGON_MIN_NET_FLOW = 0        # 板块最低N日净流入（万元），过滤弱板块

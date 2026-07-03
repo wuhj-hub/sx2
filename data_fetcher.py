@@ -750,3 +750,440 @@ def get_three_indices(days: int = 5) -> pd.DataFrame:
             result['深证收盘'] = sz['close'].astype(float).values
             result['全A替代收盘'] = qa['close'].astype(float).values
     return result
+
+
+# ── 市场温度计 ──────────────────────────────────────────
+
+def get_market_temperature() -> dict:
+    """
+    市场温度计：0-100分量化市场冷暖
+    五个子指标各20分：
+    1. 价格动量：当前价vs20日均线偏离度
+    2. 成交量：当日成交额vs20日均值
+    3. MACD状态：DIF/DEA位置
+    4. 短期趋势：近5日收益率
+    5. 中期趋势：近20日收益率
+    """
+    index_code = config.THERMOMETER_INDEX  # 默认sh000300
+    log.info(f"  [温度计] 计算市场温度 ({index_code})")
+    
+    try:
+        kline = get_sina_kline(index_code, scale=240, datalen=60)
+        if kline.empty or len(kline) < 25:
+            log.warning("  [温度计] K线数据不足")
+            return {'score': 50, 'zone': '数据不足', 'emoji': '❓', 'sub_scores': {}}
+        
+        # 确保数据类型
+        kline['close'] = kline['close'].astype(float)
+        kline['volume'] = kline['volume'].astype(float)
+        kline = kline.sort_values('day').reset_index(drop=True)
+        
+        close = kline['close']
+        volume = kline['volume']
+        
+        # ── 1. 价格动量（vs MA20偏离度）──
+        ma20 = close.rolling(20).mean()
+        deviation = (close.iloc[-1] - ma20.iloc[-1]) / ma20.iloc[-1]
+        # 偏离>5% → 20分，<-5% → 0分，线性插值
+        momentum_score = max(0, min(20, (deviation + 0.05) / 0.10 * 20))
+        
+        # ── 2. 成交量（vs 20日均量）──
+        avg_vol_20 = volume.tail(20).mean()
+        vol_ratio = volume.iloc[-1] / avg_vol_20 if avg_vol_20 > 0 else 1.0
+        # 放量>1.5倍 → 20分，<0.5倍 → 0分
+        volume_score = max(0, min(20, (vol_ratio - 0.5) / 1.0 * 20))
+        
+        # ── 3. MACD状态 ──
+        ema12 = close.ewm(span=12, adjust=False).mean()
+        ema26 = close.ewm(span=26, adjust=False).mean()
+        dif = ema12 - ema26
+        dea = dif.ewm(span=9, adjust=False).mean()
+        macd_hist = 2 * (dif - dea)
+        
+        dif_val = dif.iloc[-1]
+        dea_val = dea.iloc[-1]
+        
+        # DIF>0且DEA>0 → 高分；DIF<0且DEA<0 → 低分
+        if dif_val > 0 and dea_val > 0:
+            macd_score = 16  # 多头排列
+            if macd_hist.iloc[-1] > macd_hist.iloc[-2]:
+                macd_score = 20  # 柱还在放大
+        elif dif_val < 0 and dea_val < 0:
+            macd_score = 4   # 空头排列
+            if macd_hist.iloc[-1] < macd_hist.iloc[-2]:
+                macd_score = 0  # 柱还在放大向下
+        else:
+            macd_score = 10  # 混合状态
+        
+        # ── 4. 短期趋势（5日收益率）──
+        if len(close) >= 6:
+            ret_5d = (close.iloc[-1] - close.iloc[-6]) / close.iloc[-6]
+        else:
+            ret_5d = 0
+        # >3% → 20分，<-3% → 0分
+        trend_5d_score = max(0, min(20, (ret_5d + 0.03) / 0.06 * 20))
+        
+        # ── 5. 中期趋势（20日收益率）──
+        if len(close) >= 21:
+            ret_20d = (close.iloc[-1] - close.iloc[-21]) / close.iloc[-21]
+        else:
+            ret_20d = 0
+        # >8% → 20分，<-8% → 0分
+        trend_20d_score = max(0, min(20, (ret_20d + 0.08) / 0.16 * 20))
+        
+        # ── 汇总 ──
+        total = momentum_score + volume_score + macd_score + trend_5d_score + trend_20d_score
+        total = round(total)
+        total = max(0, min(100, total))
+        
+        sub_scores = {
+            '动量': round(momentum_score),
+            '量能': round(volume_score),
+            'MACD': macd_score,
+            '短期趋势': round(trend_5d_score),
+            '中期趋势': round(trend_20d_score),
+        }
+        
+        # 温度分级
+        if total >= 80:
+            zone, emoji = '过热区', '🔥'
+        elif total >= 60:
+            zone, emoji = '温暖区', '☀️'
+        elif total >= 40:
+            zone, emoji = '中性区', '🌤️'
+        elif total >= 20:
+            zone, emoji = '偏冷区', '🌧️'
+        else:
+            zone, emoji = '冰点区', '🧊'
+        
+        result = {
+            'score': total,
+            'zone': zone,
+            'emoji': emoji,
+            'sub_scores': sub_scores,
+            'deviation': round(deviation * 100, 2),
+            'vol_ratio': round(vol_ratio, 2),
+            'ret_5d': round(ret_5d * 100, 2),
+            'ret_20d': round(ret_20d * 100, 2),
+        }
+        log.info(f"  [温度计] {total}/100 {emoji}{zone} {sub_scores}")
+        return result
+        
+    except Exception as e:
+        log.error(f"  [温度计] 计算失败: {e}")
+        return {'score': 50, 'zone': '数据异常', 'emoji': '❓', 'sub_scores': {}}
+
+
+# ── 板块资金多周期全景 ──────────────────────────────────
+
+def get_sector_flow_multi_period() -> pd.DataFrame:
+    """
+    获取板块资金流多周期数据（今日/3日/5日/10日）
+    使用akshare的stock_sector_fund_flow_rank，支持多个indicator
+    返回包含多周期的DataFrame
+    """
+    log.info("  [热力图] 获取板块资金多周期数据")
+    
+    periods = {}
+    for indicator in ['今日', '3日', '5日', '10日']:
+        try:
+            df_ak = ak.stock_sector_fund_flow_rank(indicator=indicator, sector_type="行业资金流")
+            if df_ak is not None and not df_ak.empty:
+                # 标准化列名
+                cols = df_ak.columns.tolist()
+                name_col = next((c for c in cols if '名称' in c), cols[1] if len(cols) > 1 else cols[0])
+                flow_col = next((c for c in cols if '净流入' in c and '净额' in c), None)
+                pct_col = next((c for c in cols if '涨跌幅' in c), None)
+                
+                if flow_col is None:
+                    # 尝试找包含"净流入"的列
+                    flow_candidates = [c for c in cols if '净流入' in c]
+                    if flow_candidates:
+                        flow_col = flow_candidates[0]
+                
+                if flow_col:
+                    period_data = {}
+                    for _, row in df_ak.iterrows():
+                        name = str(row.get(name_col, ''))
+                        net_flow = _safe_float(str(row.get(flow_col, '0')).replace(',', ''))
+                        pct = _safe_float(str(row.get(pct_col, '0')).replace('%', '').replace(',', '')) if pct_col else 0
+                        period_data[name] = {'net_flow': net_flow, 'pct': pct}
+                    periods[indicator] = period_data
+                    log.info(f"    {indicator}: {len(period_data)}个板块")
+        except Exception as e:
+            log.warning(f"    {indicator}获取失败: {e}")
+    
+    if not periods:
+        log.warning("  [热力图] 所有周期数据获取失败")
+        return pd.DataFrame()
+    
+    # 合并所有周期数据
+    all_sectors = set()
+    for p_data in periods.values():
+        all_sectors.update(p_data.keys())
+    
+    rows = []
+    for sector in all_sectors:
+        row = {'名称': sector}
+        for indicator in ['今日', '3日', '5日', '10日']:
+            p_data = periods.get(indicator, {})
+            if sector in p_data:
+                row[f'{indicator}_净流入'] = p_data[sector]['net_flow']
+                row[f'{indicator}_涨跌'] = p_data[sector]['pct']
+            else:
+                row[f'{indicator}_净流入'] = 0
+                row[f'{indicator}_涨跌'] = 0
+        
+        # 计算累计控盘度（10日累计净流入，归一化）
+        total_10d = row.get('10日_净流入', 0) + row.get('5日_净流入', 0) + row.get('3日_净流入', 0) + row.get('今日_净流入', 0)
+        row['累计净流入'] = total_10d
+        
+        # 判断方向
+        flows = [row.get(f'{p}_净流入', 0) for p in ['今日', '3日', '5日', '10日']]
+        if all(f > 0 for f in flows):
+            row['方向'] = '📈'
+        elif all(f < 0 for f in flows):
+            row['方向'] = '📉'
+        elif flows[0] > 0 and flows[-1] < 0:
+            row['方向'] = '⚡'  # 短期反转
+        else:
+            row['方向'] = '➖'
+        
+        rows.append(row)
+    
+    result = pd.DataFrame(rows)
+    result = result.sort_values('累计净流入', ascending=False).reset_index(drop=True)
+    log.info(f"  [热力图] 合并完成: {len(result)}个板块")
+    return result
+
+
+# ── 个股多周期资金流 ──────────────────────────────────
+
+def get_stock_fund_flow_periods(stock_code: str, periods: list = None) -> dict:
+    """
+    获取单只股票的多周期主力净流入 + 资金沉淀率
+    返回: {'3d': float, '5d': float, '10d': float, '20d': float,
+           'sedimentation_rate': float, '3d_flow': float, '3d_turnover': float}
+    """
+    if periods is None:
+        periods = config.MULTI_PERIOD_DAYS
+    
+    result = {f'{d}d': 0 for d in periods}
+    result['sedimentation_rate'] = 0
+    result['3d_flow'] = 0
+    result['3d_turnover'] = 0
+    
+    try:
+        # 判断市场
+        if stock_code.startswith('6'):
+            market = 'sh'
+        else:
+            market = 'sz'
+        
+        # 使用akshare获取个股历史资金流
+        df_hist = ak.stock_individual_fund_flow(stock=stock_code, market=market)
+        if df_hist is None or df_hist.empty:
+            return result
+        
+        # 找到主力净流入列
+        cols = df_hist.columns.tolist()
+        flow_col = next((c for c in cols if '主力净流入' in c and '净额' in c), None)
+        if flow_col is None:
+            flow_col = next((c for c in cols if '主力净流入' in c), None)
+        if flow_col is None:
+            return result
+        
+        df_hist = df_hist.tail(25)  # 取最近25天足够
+        flows = df_hist[flow_col].astype(float).values
+        
+        # 计算各周期累计
+        for d in periods:
+            if len(flows) >= d:
+                result[f'{d}d'] = float(np.sum(flows[-d:]))
+        
+        # ── 资金沉淀率 ──────────────────────────────
+        # 沉淀率 = 3日主力净流入 / 3日总成交额
+        # 从K线数据获取成交额
+        if config.SEDIMENTATION_ENABLED and len(flows) >= 3:
+            prefix = 'sh' if stock_code.startswith('6') else 'sz'
+            symbol = f"{prefix}{stock_code}"
+            kline = get_sina_kline(symbol, scale=240, datalen=10)
+            if not kline.empty and len(kline) >= 3:
+                kline['amount'] = kline['close'].astype(float) * kline['volume'].astype(float)
+                turnover_3d = float(kline['amount'].tail(3).sum())
+                flow_3d = float(np.sum(flows[-3:]))
+                if turnover_3d > 0:
+                    result['sedimentation_rate'] = flow_3d / turnover_3d
+                    result['3d_flow'] = flow_3d
+                    result['3d_turnover'] = turnover_3d
+        
+        return result
+        
+    except Exception as e:
+        log.warning(f"  [多周期] {stock_code} 资金流获取失败: {e}")
+        return result
+
+
+# ════════════════════════════════════════════════════════
+#  主线军捕获器：识别近期启动板块 + 板块内龙头
+# ════════════════════════════════════════════════════════
+
+def get_main_line_sectors(lookback_days: int = 3) -> list:
+    """
+    主线军捕获器：
+    1. 获取板块多周期资金流数据
+    2. 筛选近N日净流入>0的"启动板块"
+    3. 返回按N日净流入排序的板块列表（含龙头个股）
+    
+    返回: [
+        {
+            'sector': str,          # 板块名
+            'net_flow_3d': float,   # 3日净流入（万元）
+            'pct_3d': float,        # 3日涨跌幅%
+            'direction': str,       # 方向标记
+            'leaders': [            # 板块内龙头（沉淀率排序）
+                {'symbol': str, 'code': str, 'name': str,
+                 'sedimentation_rate': float, 'pct_change': float, 'close': float},
+                ...
+            ]
+        }, ...
+    ]
+    """
+    log.info(f"  [主线军] 扫描近{lookback_days}日启动板块")
+    
+    try:
+        # 获取板块3日资金流（对应N日启动判断）
+        df_3d = None
+        fallback_to_today = False
+        try:
+            df_3d = ak.stock_sector_fund_flow_rank(indicator='3日', sector_type="行业资金流")
+        except Exception as e:
+            log.warning(f"  [主线军] 3日板块数据获取失败，降级使用今日数据: {e}")
+            fallback_to_today = True
+        
+        if df_3d is None or df_3d.empty:
+            if not fallback_to_today:
+                log.warning("  [主线军] 3日板块数据为空，降级使用今日数据")
+                fallback_to_today = True
+            try:
+                df_3d = ak.stock_sector_fund_flow_rank(indicator='今日', sector_type="行业资金流")
+            except Exception as e:
+                log.warning(f"  [主线军] 今日板块数据也获取失败: {e}")
+        
+        if df_3d is None or df_3d.empty:
+            # 最终降级：使用 Sina 板块资金流（仅今日数据）
+            log.info("  [主线军] akshare全部失败，降级到Sina板块资金流")
+            sina_df = get_sector_fund_flow(indicator="今日")
+            if sina_df is None or sina_df.empty:
+                log.warning("  [主线军] Sina板块数据也获取失败，主线军本轮跳过")
+                return []
+            df_3d = sina_df  # 复用同一解析逻辑，Sina netamount单位已是元
+            fallback_to_today = True
+            log.info(f"  [主线军] Sina降级成功，获取{len(df_3d)}条板块数据")
+        
+        # 获取板块今日资金流（用于今日数据补充，仅在未降级时额外获取）
+        df_today = None
+        if not fallback_to_today:
+            try:
+                df_today = ak.stock_sector_fund_flow_rank(indicator='今日', sector_type="行业资金流")
+            except Exception:
+                df_today = None
+        
+        # 解析3日数据
+        cols = df_3d.columns.tolist()
+        name_col = next((c for c in cols if '名称' in c), cols[1] if len(cols) > 1 else cols[0])
+        flow_col = next((c for c in cols if '净流入' in c and '净额' in c), None)
+        if flow_col is None:
+            flow_candidates = [c for c in cols if '净流入' in c]
+            flow_col = flow_candidates[0] if flow_candidates else None
+        pct_col = next((c for c in cols if '涨跌幅' in c), None)
+        
+        if flow_col is None:
+            log.warning("  [主线军] 未找到净流入列")
+            return []
+        
+        # 构建板块数据
+        sectors = []
+        for _, row in df_3d.iterrows():
+            name = str(row.get(name_col, ''))
+            net_flow = _safe_float(str(row.get(flow_col, '0')).replace(',', ''))
+            pct = _safe_float(str(row.get(pct_col, '0')).replace('%', '').replace(',', '')) if pct_col else 0
+            if net_flow > config.DRAGON_MIN_NET_FLOW:
+                sectors.append({
+                    'sector': name,
+                    'net_flow_3d': net_flow,
+                    'pct_3d': pct,
+                })
+        
+        # 按3日净流入降序排序，取TOP N
+        sectors = sorted(sectors, key=lambda x: x['net_flow_3d'], reverse=True)[:config.DRAGON_TOP_SECTORS]
+        log.info(f"  [主线军] 启动板块: {len(sectors)}个, TOP: {[s['sector'] for s in sectors[:3]]}")
+        
+        # ── 为每个启动板块获取龙头个股 ──
+        # SW_TO_SINA 反向映射：板块名 → Sina节点
+        # 由于Sina板块节点与akshare行业名不完全一致，用akshare的成分股API
+        for sector in sectors:
+            sector_name = sector['sector']
+            leaders = []
+            try:
+                # 用akshare获取板块成分股
+                cons_df = ak.stock_board_industry_cons_em(symbol=sector_name)
+                if cons_df is not None and not cons_df.empty:
+                    # 获取成分股的代码列表
+                    code_col = next((c for c in cons_df.columns if '代码' in c), cons_df.columns[0])
+                    name_col_stock = next((c for c in cons_df.columns if '名称' in c), cons_df.columns[1])
+                    pct_col_stock = next((c for c in cons_df.columns if '涨跌幅' in c or '最新涨幅' in c), None)
+                    
+                    stock_codes = cons_df[code_col].astype(str).tolist()[:50]  # 取前50只扫描
+                    
+                    # 批量获取沉淀率（只取前10只以减少API调用）
+                    for stock_code in stock_codes[:15]:
+                        stock_code = stock_code.zfill(6)
+                        prefix = 'sh' if stock_code.startswith('6') else ('sz' if stock_code.startswith(('0', '3')) else 'bj')
+                        symbol = f"{prefix}{stock_code}"
+                        
+                        try:
+                            periods = get_stock_fund_flow_periods(stock_code, periods=[3])
+                            if periods.get('sedimentation_rate', 0) > 0:
+                                # 获取涨跌幅（从cons_df中取，或从K线取）
+                                pct = 0
+                                close = 0
+                                stock_row = cons_df[cons_df[code_col].astype(str) == stock_code]
+                                if not stock_row.empty:
+                                    if pct_col_stock:
+                                        pct = _safe_float(stock_row.iloc[0].get(pct_col_stock, 0))
+                                    close_col = next((c for c in cons_df.columns if '最新价' in c or '收盘' in c), None)
+                                    if close_col:
+                                        close = _safe_float(stock_row.iloc[0].get(close_col, 0))
+                                
+                                name_in_board = ''
+                                if not stock_row.empty:
+                                    name_in_board = str(stock_row.iloc[0].get(name_col_stock, ''))
+                                
+                                leaders.append({
+                                    'symbol': symbol,
+                                    'code': stock_code,
+                                    'name': name_in_board,
+                                    'sedimentation_rate': periods['sedimentation_rate'],
+                                    'pct_change': pct,
+                                    'close': close,
+                                    'net_flow_3d': periods.get('3d', 0),
+                                })
+                        except Exception:
+                            continue
+                    
+                    # 按沉淀率降序，取龙头
+                    leaders = sorted(leaders, key=lambda x: x['sedimentation_rate'], reverse=True)[:config.DRAGON_LEADERS_PER_SECTOR]
+                    
+            except Exception as e:
+                log.warning(f"  [主线军] {sector_name} 成分股获取失败: {e}")
+            
+            sector['leaders'] = leaders
+            if leaders:
+                log.info(f"    {sector_name}: 龙头 {leaders[0]['name']} 沉淀率{leaders[0]['sedimentation_rate']:.1%}")
+        
+        return sectors
+        
+    except Exception as e:
+        log.error(f"  [主线军] 扫描失败: {e}")
+        return []

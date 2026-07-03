@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """
-双弦投资系统 v2.0 — 主入口
+双弦投资系统 v2.2 — 主入口
 ==================================
-逻辑链弦(月线牛市+日线突破V3.0) × 资金流弦(七步复盘)
-AND门控：两弦信号对齐才推送操作信号
+逻辑链弦(月线牛市+日线突破V3.0) × 资金流弦(七步复盘+板块全景+多周期验证)
+市场温度计(五维评估) + 三层共振评分 + 资金沉淀率 + 主线军捕获器 + AND门控
 
 每日收盘后1小时(16:00)运行，生成双弦日报并推送。
-GitHub Actions 定时触发(cron: 0 8 * * 1-5) → Server酱推微信。
+GitHub Actions 定时触发(cron: 0 8 * * 1-5) → PushPlus+Server酱双通道推微信。
 """
 
 import sys
@@ -21,6 +21,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import config
 from logic_chain import run_logic_scan
 from flow_chain import run_flow_scan
+from data_fetcher import get_market_temperature
 from reporter import generate_daily_report, generate_push_content
 from push import push_report
 
@@ -35,20 +36,32 @@ def setup_logging(level=logging.INFO):
 
 def run_shuangxian_v2(target_date: str = None) -> dict:
     """
-    双弦系统v2.0完整运行流程
+    双弦系统v2.1完整运行流程
     
+    0. 市场温度计（五维评估）
     1. 逻辑链弦：月线牛市 + 日线突破 → 候选股
-    2. 资金流弦：七步复盘 → 资金流确认
+    2. 资金流弦：七步复盘 + 板块全景 + 多周期验证 → 资金流确认
     3. AND门控：两弦共振 → 操作信号
     4. 生成报告 + 推送
     """
     log = logging.getLogger("shuangxian")
     log.info("=" * 60)
-    log.info(f"双弦投资系统 v2.0 启动 — {datetime.now().strftime('%Y-%m-%d %H:%M')}")
+    log.info(f"双弦投资系统 v2.2 启动 — {datetime.now().strftime('%Y-%m-%d %H:%M')}")
     log.info("=" * 60)
     
     if target_date is None:
         target_date = datetime.now().strftime('%Y-%m-%d')
+    
+    # ── 第零步：市场温度计 ─────────────────────────────
+    log.info(">>> 市场温度计 <<<")
+    temperature = None
+    if config.THERMOMETER_ENABLED:
+        try:
+            temperature = get_market_temperature()
+            log.info(f"  市场温度: {temperature.get('score', 'N/A')}/100 {temperature.get('emoji', '')}{temperature.get('zone', '')}")
+        except Exception as e:
+            log.error(f"  温度计计算失败: {e}")
+            temperature = None
     
     # ── 第一步：逻辑链弦 ──────────────────────────────
     log.info(">>> 逻辑链弦：月线牛市 + 日线突破 <<<")
@@ -67,9 +80,9 @@ def run_shuangxian_v2(target_date: str = None) -> dict:
     log.info(f"  逻辑链输出: {len(candidates)}只候选股")
     
     # ── 第二步：资金流弦 ──────────────────────────────
-    log.info(">>> 资金流弦：七步复盘 + AND门控 <<<")
+    log.info(">>> 资金流弦：七步复盘 + 板块全景 + 多周期验证 + 三层共振 + 主线军 <<<")
     try:
-        flow_result = run_flow_scan(logic_candidates=candidates)
+        flow_result = run_flow_scan(logic_candidates=candidates, temperature=temperature)
     except Exception as e:
         log.error(f"资金流弦执行异常: {e}")
         flow_result = {
@@ -77,6 +90,7 @@ def run_shuangxian_v2(target_date: str = None) -> dict:
             'index_direction': {'direction': '数据缺失', 'action': '无法判断'},
             'sector_flow': {'hot_sectors': [], 'cold_sectors': [], 'sector_net_flow': {}},
             'individual_flow': {'individual_net_flow': {}, 'top_inflow': []},
+            'multi_period': {},
             'and_gate': {
                 'gated_candidates': [], 'rejected_candidates': candidates,
                 'gate_summary': {
@@ -92,7 +106,7 @@ def run_shuangxian_v2(target_date: str = None) -> dict:
     # ── 第三步：生成报告 ──────────────────────────────
     log.info(">>> 生成报告 <<<")
     try:
-        report_path = generate_daily_report(logic_result, flow_result)
+        report_path = generate_daily_report(logic_result, flow_result, temperature=temperature)
         log.info(f"  报告已生成: {report_path}")
     except Exception as e:
         log.error(f"  报告生成失败: {e}")
@@ -100,14 +114,15 @@ def run_shuangxian_v2(target_date: str = None) -> dict:
     
     # ── 第四步：推送 ──────────────────────────────────
     try:
-        title, content = generate_push_content(logic_result, flow_result)
+        title, content = generate_push_content(logic_result, flow_result, temperature=temperature)
         push_report(report_path=report_path, title=title, content=content)
     except Exception as e:
         log.error(f"  推送失败: {e}")
     
     # ── 完成 ──────────────────────────────────────────
+    temp_str = f"温度{temperature['score']}/100" if temperature else "温度N/A"
     log.info("=" * 60)
-    log.info(f"双弦系统v2.0完成 — 逻辑链{len(candidates)}只 → 共振{len(gated)}只")
+    log.info(f"双弦系统v2.2完成 — {temp_str} — 逻辑链{len(candidates)}只 → 共振{len(gated)}只")
     log.info("=" * 60)
     
     return {
@@ -116,11 +131,12 @@ def run_shuangxian_v2(target_date: str = None) -> dict:
         'gated_candidates': len(gated),
         'logic_result': logic_result,
         'flow_result': flow_result,
+        'temperature': temperature,
     }
 
 
 def main():
-    parser = argparse.ArgumentParser(description='双弦投资系统v2.0')
+    parser = argparse.ArgumentParser(description='双弦投资系统v2.2')
     parser.add_argument('--date', type=str, default=None, help='目标日期 YYYY-MM-DD，默认今天')
     parser.add_argument('--output-dir', type=str, default=None, help='报告输出目录')
     parser.add_argument('--cache-dir', type=str, default=None, help='缓存目录')
@@ -138,7 +154,9 @@ def main():
     
     gated = result.get('gated_candidates', 0)
     logic = result.get('logic_candidates', 0)
-    print(f"\n📊 双弦系统v2.0: 逻辑链{logic}只 → 共振{gated}只")
+    temp = result.get('temperature')
+    temp_str = f"🌡️{temp['score']}/100{temp.get('emoji','')}" if temp else ""
+    print(f"\n📊 双弦系统v2.2: {temp_str} 逻辑链{logic}只 → 共振{gated}只")
     if result.get('report_path'):
         print(f"📄 报告: {result['report_path']}")
     
