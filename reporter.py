@@ -426,6 +426,48 @@ def generate_daily_report(logic_result: dict, flow_result: dict, temperature: di
     lines.append("---")
     lines.append("")
     
+    # ── 资金沉淀率综合榜单（v2.2新增）──
+    sedimentation_rank = flow_result.get('sedimentation_rank', [])
+    
+    lines.append("## 六、资金沉淀率综合榜单 TOP30")
+    lines.append("")
+    lines.append(f"合并逻辑链候选股+主线军成分股，按沉淀率(3日主力净流入/3日总成交额)降序排列（≤{config.MAX_PRICE}元）：")
+    lines.append("")
+    
+    # 价格筛选
+    sedimentation_rank = _filter_by_price(sedimentation_rank)
+    
+    if sedimentation_rank:
+        lines.append("| 排名 | 代码 | 名称 | 行业 | 现价 | 涨跌幅% | 3D净流入 | 沉淀率 | 来源 | 所属板块 |")
+        lines.append("|------|------|------|------|------|--------|---------|--------|------|---------|")
+        for i, s in enumerate(sedimentation_rank[:config.SED_RANK_TOP_N]):
+            lines.append(
+                f"| {i+1} "
+                f"| {s.get('code', '')} "
+                f"| {s.get('name', '')} "
+                f"| {s.get('industry', '')} "
+                f"| {s.get('close', 0):.2f} "
+                f"| {s.get('pct_change', 0):.2f} "
+                f"| {_format_flow_yi(s.get('net_flow_3d', 0))} "
+                f"| **{s.get('sedimentation_rate', 0):.1%}** "
+                f"| {s.get('source', '')} "
+                f"| {s.get('sector', '')} |"
+            )
+        lines.append("")
+        # 统计
+        src_logic = sum(1 for s in sedimentation_rank if s.get('source') == '逻辑链')
+        src_dragon = sum(1 for s in sedimentation_rank if s.get('source') == '主线军')
+        src_both = sum(1 for s in sedimentation_rank if s.get('source') == '逻辑链+主线军')
+        lines.append(f"> 📊 共{len(sedimentation_rank)}只入榜: 逻辑链{src_logic}只 | 主线军{src_dragon}只 | 双源共振{src_both}只")
+        if src_both > 0:
+            lines.append("> 💡 **双源共振** = 同时出现在逻辑链信号+主线军板块中，信号最强")
+    else:
+        lines.append("*今日无沉淀率数据*")
+    lines.append("")
+    
+    lines.append("---")
+    lines.append("")
+    
     # ── 方法论 ──────────────────────────────────────
     lines.append("## 📌 双弦系统方法论")
     lines.append("")
@@ -435,6 +477,7 @@ def generate_daily_report(logic_result: dict, flow_result: dict, temperature: di
     lines.append("> **资金沉淀率**: 3日主力净流入/3日总成交额 → 区分真进场vs假拉升")
     lines.append("> **三层共振**: 大盘+板块+个股三层趋势同向评分(-3~+3) → 高胜率介入")
     lines.append("> **主线军捕获器**: 近N日启动板块+板块内龙头(沉淀率排序) → 锁定主线方向")
+    lines.append("> **沉淀率榜单**: 逻辑链+主线军合并去重按沉淀率排序 → 一眼锁定资金锁仓最硬的标的")
     lines.append("> **AND门控**: 两弦信号对齐才操作，缺一不可")
     lines.append("> **止损**: MA20保底 + 8%移动止盈 + 月线转熊退出 + 60日最长持有")
     lines.append("")
@@ -577,11 +620,28 @@ def generate_push_content(logic_result: dict, flow_result: dict, temperature: di
                 lines.append(f"  龙头: {top_leader.get('name', '')} 沉淀率{top_leader.get('sedimentation_rate', 0):.1%}")
             lines.append("")
         
+        # 沉淀率榜单摘要
+        sedimentation_rank = flow_result.get('sedimentation_rank', [])
+        if sedimentation_rank:
+            top5_names = [f"{s['name']}({s['sedimentation_rate']:.0%})" for s in sedimentation_rank[:5]]
+            src_both = sum(1 for s in sedimentation_rank if s.get('source') == '逻辑链+主线军')
+            lines.append(f"**💎 沉淀榜TOP5**: {', '.join(top5_names)}")
+            if src_both > 0:
+                lines.append(f"  其中双源共振{src_both}只（逻辑链+主线军同时命中）")
+            lines.append("")
+        
         lines.append("⚠️ 次日开盘价买入(T+1), MA20止损+8%移动止盈+月线转熊退出")
     elif divergence_signals:
         lines.append("今日无共振信号，但有底背离买点值得关注：")
         lines.append("  底背离信号可作为逢低布局参考，建议结合资金流人工确认后操作")
     else:
+        # 无共振但有沉淀榜数据也展示
+        sedimentation_rank = flow_result.get('sedimentation_rank', [])
+        if sedimentation_rank:
+            top5_names = [f"{s['name']}({s['sedimentation_rate']:.0%})" for s in sedimentation_rank[:5]]
+            lines.append(f"**💎 沉淀榜TOP5**: {', '.join(top5_names)}")
+            lines.append("  可关注沉淀率高且资金持续流入的标的")
+            lines.append("")
         lines.append("今日无共振信号，无底背离信号，不操作。")
     
     content = '\n'.join(lines)

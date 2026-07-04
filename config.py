@@ -128,3 +128,8 @@ DRAGON_LOOKBACK_DAYS = 3       # 板块近N日启动
 DRAGON_TOP_SECTORS = 5         # 显示TOP N主线板块
 DRAGON_LEADERS_PER_SECTOR = 5  # 每个板块内TOP N龙头
 DRAGON_MIN_NET_FLOW = 0        # 板块最低N日净流入（万元），过滤弱板块
+
+# ── 资金沉淀率综合榜单 ──────────────────────────────────
+# 合并逻辑链候选股+主线军成分股，按沉淀率降序排TOP N
+SED_RANK_ENABLED = True
+SED_RANK_TOP_N = 30  # 榜单展示数量

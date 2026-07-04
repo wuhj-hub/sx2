@@ -473,6 +473,97 @@ def step6_main_line_dragon() -> list:
 
 
 # ════════════════════════════════════════════════════════
+#  资金沉淀率综合榜单（v2.2新增）
+# ════════════════════════════════════════════════════════
+
+def build_sedimentation_rank(logic_candidates: list, multi_period: dict,
+                              main_line_dragons: list) -> list:
+    """
+    资金沉淀率综合榜单：
+    合并 逻辑链候选股 + 主线军成分股，去重后按沉淀率降序排 TOP N
+    
+    返回: [
+        {
+            'code': str, 'name': str, 'industry': str,
+            'close': float, 'pct_change': float,
+            'sedimentation_rate': float,
+            'net_flow_3d': float,
+            'source': str,  # '逻辑链' / '主线军' / '逻辑链+主线军'
+            'sector': str,  # 主线军所属板块（如有）
+        }, ...
+    ]
+    """
+    if not config.SED_RANK_ENABLED:
+        return []
+    
+    log.info("  [沉淀榜] 构建资金沉淀率综合榜单")
+    
+    # 用 dict 去重，key = code
+    stock_map = {}
+    
+    # ── 来源1：逻辑链候选股（从 multi_period 中取沉淀率）──
+    for cand in logic_candidates:
+        code = cand.get('code', '')
+        if not code:
+            continue
+        mp = multi_period.get(code, {})
+        sed_rate = mp.get('sedimentation_rate', 0)
+        if sed_rate > 0:
+            stock_map[code] = {
+                'code': code,
+                'name': cand.get('name', ''),
+                'industry': cand.get('industry', ''),
+                'close': cand.get('close', 0),
+                'pct_change': cand.get('pct_change', 0),
+                'sedimentation_rate': sed_rate,
+                'net_flow_3d': mp.get('3d', 0),
+                'source': '逻辑链',
+                'sector': '',
+            }
+    
+    # ── 来源2：主线军成分股（从 leaders 中取沉淀率）──
+    for sector in main_line_dragons:
+        sector_name = sector.get('sector', '')
+        for leader in sector.get('leaders', []):
+            code = leader.get('code', '')
+            if not code:
+                continue
+            sed_rate = leader.get('sedimentation_rate', 0)
+            if sed_rate > 0:
+                if code in stock_map:
+                    # 已有，标记来源为两者
+                    stock_map[code]['source'] = '逻辑链+主线军'
+                    # 如果主线军的沉淀率更高则更新
+                    if sed_rate > stock_map[code]['sedimentation_rate']:
+                        stock_map[code]['sedimentation_rate'] = sed_rate
+                        stock_map[code]['net_flow_3d'] = leader.get('net_flow_3d', 0)
+                    if not stock_map[code]['sector']:
+                        stock_map[code]['sector'] = sector_name
+                else:
+                    stock_map[code] = {
+                        'code': code,
+                        'name': leader.get('name', ''),
+                        'industry': '',
+                        'close': leader.get('close', 0),
+                        'pct_change': leader.get('pct_change', 0),
+                        'sedimentation_rate': sed_rate,
+                        'net_flow_3d': leader.get('net_flow_3d', 0),
+                        'source': '主线军',
+                        'sector': sector_name,
+                    }
+    
+    # 按沉淀率降序排序
+    ranked = sorted(stock_map.values(), key=lambda x: x['sedimentation_rate'], reverse=True)
+    ranked = ranked[:config.SED_RANK_TOP_N]
+    
+    log.info(f"  [沉淀榜] 合并去重{len(stock_map)}只, TOP{len(ranked)}只入榜")
+    if ranked:
+        log.info(f"  [沉淀榜] 榜首: {ranked[0]['name']}({ranked[0]['code']}) 沉淀率{ranked[0]['sedimentation_rate']:.1%} 来源:{ranked[0]['source']}")
+    
+    return ranked
+
+
+# ════════════════════════════════════════════════════════
 #  AND门控
 # ════════════════════════════════════════════════════════
 
@@ -634,6 +725,13 @@ def run_flow_scan(logic_candidates: list = None, temperature: dict = None) -> di
     if logic_candidates:
         gate_result = run_and_gate(logic_candidates, breath, sector_flow, individual_flow)
     
+    # ── 资金沉淀率综合榜单（v2.2新增）──
+    sedimentation_rank = build_sedimentation_rank(
+        logic_candidates=logic_candidates or [],
+        multi_period=multi_period,
+        main_line_dragons=main_line_dragons,
+    )
+    
     return {
         'breath': breath,
         'index_direction': index_dir,
@@ -642,5 +740,6 @@ def run_flow_scan(logic_candidates: list = None, temperature: dict = None) -> di
         'multi_period': multi_period,
         'resonance_scores': resonance_scores,
         'main_line_dragons': main_line_dragons,
+        'sedimentation_rank': sedimentation_rank,
         'and_gate': gate_result,
     }
