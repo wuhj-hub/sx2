@@ -475,6 +475,208 @@ def get_industry_constituents() -> dict:
 
 
 # ════════════════════════════════════════════════════════
+#  概念板块成分股（扩展至~50个板块）
+# ════════════════════════════════════════════════════════
+
+def get_concept_sector_stocks() -> tuple:
+    """
+    获取热门概念板块成分股 → (concept_map, concept_stocks)
+    
+    concept_map: {symbol: concept_name}  (个股→概念映射)
+    concept_stocks: {concept_name: [symbol1, symbol2, ...]}  (概念→成分股列表)
+    
+    优先级：
+    1. akshare stock_board_concept_name_em() 获取概念板块列表
+    2. 按关键词匹配+成分股数量筛选热门概念
+    3. akshare stock_board_concept_cons_em() 获取成分股
+    """
+    concept_map = {}     # symbol → concept_name
+    concept_stocks = {}  # concept_name → [symbols]
+    
+    if not config.CONCEPT_ENABLED:
+        log.info("  概念板块功能已禁用")
+        return concept_map, concept_stocks
+    
+    log.info("  获取概念板块成分股...")
+    
+    try:
+        # 获取东方财富概念板块列表
+        board_df = _retry(ak.stock_board_concept_name_em)
+        if board_df is None or board_df.empty:
+            log.warning("  概念板块列表获取为空")
+            return concept_map, concept_stocks
+        
+        log.info(f"  概念板块列表: {len(board_df)}个")
+        
+        # 解析列名
+        cols = board_df.columns.tolist()
+        name_col = next((c for c in cols if '名称' in c or '板块名称' in c), None)
+        code_col = next((c for c in cols if '代码' in c or '板块代码' in c), None)
+        # 成分股数量列（可能存在）
+        count_col = next((c for c in cols if '数量' in c or '成分' in c), None)
+        
+        if not name_col:
+            # 尝试使用第二列（通常第一列是代码，第二列是名称）
+            name_col = cols[1] if len(cols) > 1 else cols[0]
+        
+        # ── 筛选热门概念 ──
+        # 策略：先按关键词匹配，不足则按成分股数量补足
+        keywords = config.CONCEPT_KEYWORDS
+        top_n = config.CONCEPT_TOP_N
+        
+        # 为每个概念打分（关键词匹配优先，其次按成分股数量）
+        scored_concepts = []
+        for _, row in board_df.iterrows():
+            concept_name = str(row.get(name_col, ''))
+            if not concept_name or concept_name == 'nan':
+                continue
+            
+            # 关键词匹配得分
+            keyword_score = 0
+            for kw in keywords:
+                if kw in concept_name:
+                    keyword_score += 10
+                    break  # 每个概念只加一次关键词分
+            
+            # 成分股数量得分（如果列存在）
+            count_score = 0
+            if count_col:
+                try:
+                    count_score = int(_safe_float(row.get(count_col, 0)))
+                except (ValueError, TypeError):
+                    count_score = 0
+            
+            total_score = keyword_score * 1000 + count_score  # 关键词匹配优先
+            scored_concepts.append({
+                'name': concept_name,
+                'score': total_score,
+                'keyword_matched': keyword_score > 0,
+            })
+        
+        # 排序：关键词匹配优先，其次按得分
+        scored_concepts.sort(key=lambda x: (x['keyword_matched'], x['score']), reverse=True)
+        
+        # 取TOP N概念
+        selected = scored_concepts[:top_n]
+        keyword_matched = sum(1 for c in selected if c['keyword_matched'])
+        log.info(f"  筛选概念: TOP{len(selected)}个 (关键词命中{keyword_matched}个)")
+        
+        # ── 获取每个概念的成分股 ──
+        for concept in selected:
+            concept_name = concept['name']
+            try:
+                cons_df = _retry(ak.stock_board_concept_cons_em, symbol=concept_name)
+                if cons_df is not None and not cons_df.empty:
+                    code_col_cons = next((c for c in cons_df.columns if '代码' in c), None)
+                    if code_col_cons:
+                        symbols = []
+                        for code in cons_df[code_col_cons].astype(str):
+                            code = code.zfill(6)
+                            prefix = 'sh' if code.startswith('6') else ('sz' if code.startswith(('0', '3')) else 'bj')
+                            sym = f'{prefix}{code}'
+                            symbols.append(sym)
+                            # 个股→概念映射（一只股可能属于多个概念，取最后匹配的）
+                            if sym not in concept_map:
+                                concept_map[sym] = concept_name
+                        
+                        concept_stocks[concept_name] = symbols
+                        log.info(f"  概念 [{concept_name}]: {len(symbols)}只")
+                    else:
+                        log.debug(f"  概念 {concept_name} 成分股列名异常: {cons_df.columns.tolist()}")
+                else:
+                    log.debug(f"  概念 {concept_name} 成分股为空")
+            except Exception as e:
+                log.warning(f"  概念 {concept_name} 成分股获取失败: {e}")
+            
+            # 避免请求过快
+            time.sleep(0.3)
+        
+        log.info(f"  概念板块映射: {len(concept_map)}只股票, {len(concept_stocks)}个概念")
+        
+    except Exception as e:
+        log.error(f"  概念板块获取失败: {e}")
+    
+    return concept_map, concept_stocks
+
+
+def get_concept_sector_fund_flow() -> pd.DataFrame:
+    """
+    获取概念板块资金流数据
+    使用akshare stock_board_concept_name_em()获取概念板块列表和当日涨跌数据
+    使用Sina概念板块资金流或概念板块成分股资金流加总
+    
+    返回: DataFrame (列: 名称, 净流入, 涨跌幅)
+    """
+    if not config.CONCEPT_ENABLED:
+        return pd.DataFrame()
+    
+    log.info("  [概念资金流] 获取概念板块资金流")
+    
+    # ── 方法1：Sina概念板块资金流 ──
+    try:
+        url = (f"https://vip.stock.finance.sina.com.cn/quotes_service/api/json_v2.php/"
+               f"MoneyFlow.ssl_bkzj_bk?page=1&num=100&sort=netamount&asc=0&fenlei=1")
+        raw = _sina_request(url)
+        if raw:
+            data = json.loads(raw)
+            if data:
+                rows = []
+                for item in data:
+                    name = str(item.get('name', ''))
+                    if not name:
+                        continue
+                    net_inflow = _safe_float(item.get('netamount', 0))
+                    change_pct = _safe_float(item.get('avg_changeratio', 0)) * 100
+                    net_inflow_pct = _safe_float(item.get('ratioamount', 0))
+                    
+                    rows.append({
+                        '名称': name,
+                        '净流入': net_inflow,
+                        '涨跌幅': change_pct,
+                        '净流入占比': net_inflow_pct,
+                    })
+                
+                if rows:
+                    result = pd.DataFrame(rows)
+                    log.info(f"  [概念资金流] Sina获取成功: {len(result)}个概念板块")
+                    return result
+    except Exception as e:
+        log.warning(f"  [概念资金流] Sina获取失败: {e}")
+    
+    # ── 方法2：akshare概念板块列表（仅当日涨跌，无资金流）──
+    try:
+        board_df = _retry(ak.stock_board_concept_name_em)
+        if board_df is not None and not board_df.empty:
+            cols = board_df.columns.tolist()
+            name_col = next((c for c in cols if '名称' in c or '板块名称' in c), None)
+            pct_col = next((c for c in cols if '涨跌幅' in c), None)
+            
+            if not name_col:
+                name_col = cols[1] if len(cols) > 1 else cols[0]
+            
+            rows = []
+            for _, row in board_df.iterrows():
+                name = str(row.get(name_col, ''))
+                pct = _safe_float(row.get(pct_col, 0)) if pct_col else 0
+                rows.append({
+                    '名称': name,
+                    '净流入': 0,  # akshare列表无资金流数据
+                    '涨跌幅': pct,
+                    '净流入占比': 0,
+                })
+            
+            if rows:
+                result = pd.DataFrame(rows)
+                log.info(f"  [概念资金流] akshare降级获取: {len(result)}个概念板块(无资金流)")
+                return result
+    except Exception as e:
+        log.warning(f"  [概念资金流] akshare降级也失败: {e}")
+    
+    log.warning("  [概念资金流] 所有数据源均失败")
+    return pd.DataFrame()
+
+
+# ════════════════════════════════════════════════════════
 #  资金流弦：板块/个股资金流（复用v1.4降级链路）
 # ════════════════════════════════════════════════════════
 
@@ -1187,3 +1389,237 @@ def get_main_line_sectors(lookback_days: int = 3) -> list:
     except Exception as e:
         log.error(f"  [主线军] 扫描失败: {e}")
         return []
+
+# ════════════════════════════════════════════════════════
+#  筹码分布分析（CYQ）
+# ════════════════════════════════════════════════════════
+
+def _compute_chip_distribution(daily_df: pd.DataFrame, lookback: int = 60) -> dict:
+    """
+    本地三角筹码算法（通达信原版复刻）
+    用已有K线数据计算筹码分布，不依赖外部API
+    
+    参数:
+        daily_df: 日线DataFrame（含open/high/low/close/volume/turnover）
+        lookback: 回溯交易日数（默认60日中线）
+    
+    返回: {
+        'concentration_90': 90%集中度(%),
+        'concentration_70': 70%集中度(%),
+        'profit_ratio': 获利盘比例(0~1),
+        'avg_cost': 市场平均成本,
+        'main_peak_price': 主力成本峰（筹码最多价位）,
+        'source': 'local'
+    }
+    """
+    try:
+        import scipy.stats
+        from scipy.stats import triang as scipy_triang
+        has_scipy = True
+    except ImportError:
+        has_scipy = False
+    
+    if daily_df is None or len(daily_df) < lookback:
+        return {}
+    
+    df = daily_df.tail(lookback).copy()
+    
+    # 检查必要字段
+    if 'turnover' not in df.columns or 'amount' not in df.columns:
+        return {}
+    
+    price_step = 0.01
+    price_min = df['low'].min() * 0.98
+    price_max = df['high'].max() * 1.02
+    
+    if price_max <= price_min:
+        return {}
+    
+    price_arr = np.arange(price_min, price_max + price_step, price_step)
+    chip_total = np.zeros_like(price_arr, dtype=np.float64)
+    
+    for _, row in df.iterrows():
+        h = float(row['high'])
+        l = float(row['low'])
+        turnover = float(row.get('turnover', 0)) / 100.0
+        amount = float(row.get('amount', 0))
+        
+        if amount <= 0 or h <= l:
+            continue
+        
+        # 存量筹码随换手率折旧衰减
+        chip_total = chip_total * (1 - min(turnover, 0.99))
+        
+        # 当日成交三角分布赋值
+        mid = float(row['close'])
+        range_val = h - l
+        if range_val < price_step:
+            # 一字板，筹码集中在单一价位
+            idx = np.searchsorted(price_arr, mid)
+            if idx < len(chip_total):
+                chip_total[idx] += amount
+        else:
+            if has_scipy:
+                c_param = (mid - l) / range_val
+                c_param = max(0.001, min(0.999, c_param))
+                tri_dist = scipy_triang(c=c_param, loc=l, scale=range_val)
+                add_chip = tri_dist.pdf(price_arr) * amount
+                add_chip[np.isnan(add_chip)] = 0
+                chip_total += add_chip
+            else:
+                # 无scipy时使用均匀分布近似
+                mask = (price_arr >= l) & (price_arr <= h)
+                count = mask.sum()
+                if count > 0:
+                    chip_total[mask] += amount / count
+    
+    total_chips = chip_total.sum()
+    if total_chips <= 0:
+        return {}
+    
+    current_price = float(df['close'].iloc[-1])
+    
+    # 累计分布
+    chip_cum = np.cumsum(chip_total) / total_chips
+    
+    # 90%集中度
+    p5_idx = np.argmin(np.abs(chip_cum - 0.05))
+    p95_idx = np.argmin(np.abs(chip_cum - 0.95))
+    p5_price = float(price_arr[p5_idx])
+    p95_price = float(price_arr[p95_idx])
+    mid_90 = (p95_price + p5_price) / 2
+    concentration_90 = (p95_price - p5_price) / mid_90 * 100 if mid_90 > 0 else 0
+    
+    # 70%集中度
+    p15_idx = np.argmin(np.abs(chip_cum - 0.15))
+    p85_idx = np.argmin(np.abs(chip_cum - 0.85))
+    p15_price = float(price_arr[p15_idx])
+    p85_price = float(price_arr[p85_idx])
+    mid_70 = (p85_price + p15_price) / 2
+    concentration_70 = (p85_price - p15_price) / mid_70 * 100 if mid_70 > 0 else 0
+    
+    # 获利盘比例
+    profit_mask = price_arr < current_price
+    profit_ratio = chip_total[profit_mask].sum() / total_chips if total_chips > 0 else 0
+    
+    # 平均成本
+    avg_cost = float(np.average(price_arr, weights=chip_total)) if total_chips > 0 else current_price
+    
+    # 主力成本峰（筹码最密集价位）
+    peak_idx = int(np.argmax(chip_total))
+    main_peak_price = float(price_arr[peak_idx])
+    
+    return {
+        'concentration_90': round(concentration_90, 2),
+        'concentration_70': round(concentration_70, 2),
+        'profit_ratio': round(profit_ratio, 4),
+        'avg_cost': round(avg_cost, 2),
+        'main_peak_price': round(main_peak_price, 2),
+        'source': 'local'
+    }
+
+
+def get_chip_distribution(stock_code: str, symbol: str = None, 
+                          daily_df: pd.DataFrame = None) -> dict:
+    """
+    获取个股筹码分布数据
+    
+    优先级：
+    1. akshare stock_cyq_em（东方财富官方筹码，最准确）
+    2. 本地三角分布算法（用已有K线数据计算，稳定可靠）
+    
+    参数:
+        stock_code: 6位股票代码（如 '600519'）
+        symbol: 完整代码（如 'sh600519'），用于本地回退时获取K线
+        daily_df: 已有的日线数据，避免重复请求
+    
+    返回: {
+        'concentration_90': 90%集中度(%),
+        'concentration_70': 70%集中度(%),
+        'profit_ratio': 获利盘比例(0~1),
+        'avg_cost': 平均成本,
+        'main_peak_price': 主力成本峰,
+        'chip_concentrated': bool (90%集中度 < 阈值),
+        'source': 'akshare' / 'local'
+    }
+    """
+    result = {}
+    
+    # 方案1：尝试akshare stock_cyq_em（东方财富筹码数据）
+    try:
+        import akshare as ak
+        cyq_df = ak.stock_cyq_em(symbol=stock_code, adjust="qfq")
+        if cyq_df is not None and not cyq_df.empty:
+            latest = cyq_df.iloc[0]  # 最新一天
+            # akshare返回字段: 日期/获利比例/平均成本/90成本-低/90成本-高/90集中度/70成本-低/70成本-高/70集中度
+            result = {
+                'concentration_90': float(latest.get('90集中度', 0)) * 100 if float(latest.get('90集中度', 0)) < 1 else float(latest.get('90集中度', 0)),
+                'concentration_70': float(latest.get('70集中度', 0)) * 100 if float(latest.get('70集中度', 0)) < 1 else float(latest.get('70集中度', 0)),
+                'profit_ratio': float(latest.get('获利比例', 0)),
+                'avg_cost': float(latest.get('平均成本', 0)),
+                'main_peak_price': float(latest.get('平均成本', 0)),  # 东财CYQ无主峰价，用平均成本近似
+                'source': 'akshare'
+            }
+            # 东财集中度可能是0-1小数，也可能是百分比，统一为百分比
+            if result['concentration_90'] < 1:
+                result['concentration_90'] = result['concentration_90'] * 100
+            if result['concentration_70'] < 1:
+                result['concentration_70'] = result['concentration_70'] * 100
+    except Exception as e:
+        log.debug(f"  [筹码] {stock_code} akshare获取失败: {e}")
+    
+    # 方案2：回退到本地三角分布算法
+    if not result:
+        if daily_df is not None and not daily_df.empty:
+            result = _compute_chip_distribution(daily_df, config.CHIP_LOOKBACK)
+        else:
+            # 尝试获取K线数据
+            sym = symbol or f"{'sh' if stock_code.startswith('6') else 'sz'}{stock_code}"
+            kline = get_kline(sym, scale=240, datalen=config.CHIP_LOOKBACK + 20)
+            if not kline.empty:
+                # 需要turnover和amount字段
+                result = _compute_chip_distribution(kline, config.CHIP_LOOKBACK)
+    
+    if result:
+        result['chip_concentrated'] = result.get('concentration_90', 999) < config.CHIP_CONCENTRATION_THRESHOLD
+    
+    return result
+
+
+def batch_get_chip_distribution(candidates: list, daily_cache: dict = None) -> list:
+    """
+    批量获取候选股筹码分布
+    
+    参数:
+        candidates: 候选股列表（每个元素含 code/symbol/close/name）
+        daily_cache: 已有的日线数据缓存 {symbol: DataFrame}
+    
+    返回: 在candidates基础上增加chip字段
+    """
+    import time
+    
+    for cand in candidates:
+        code = cand.get('code', '')
+        symbol = cand.get('symbol', '')
+        
+        try:
+            # 优先使用缓存的日线数据
+            cached_df = daily_cache.get(symbol) if daily_cache else None
+            chip = get_chip_distribution(code, symbol, cached_df)
+            cand['chip'] = chip
+            
+            if chip:
+                log.info(f"  [筹码] {cand.get('name', code)}: "
+                        f"集中度90%={chip.get('concentration_90', 'N/A')}%, "
+                        f"获利盘={chip.get('profit_ratio', 0):.1%}, "
+                        f"{'🔒集中' if chip.get('chip_concentrated') else '🔓分散'}")
+            
+            # akshare请求间隔，避免被限流
+            if chip.get('source') == 'akshare':
+                time.sleep(0.3)
+                
+        except Exception as e:
+            log.debug(f"  [筹码] {code} 获取失败: {e}")
+            cand['chip'] = {}
+    
+    return candidates

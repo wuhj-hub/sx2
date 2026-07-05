@@ -1,8 +1,8 @@
 """
-双弦投资系统 v2.1 — 报告生成 + 推送
+双弦投资系统 v2.2 — 报告生成 + 推送
 ====================================
 整合逻辑链弦 + 资金流弦 + 市场温度计 + 板块资金全景 + 多周期资金验证
-AND门控：两弦信号对齐才推送操作信号
+概念板块扩展 + 3维综合评分 + AND门控：两弦信号对齐才推送操作信号
 """
 
 import os
@@ -14,6 +14,18 @@ import config
 
 log = logging.getLogger("shuangxian.reporter")
 
+
+
+
+def _format_chip_summary(chip_data: dict) -> str:
+    """格式化筹码数据为简短显示"""
+    if not chip_data:
+        return "N/A"
+    c90 = chip_data.get('concentration_90', 0)
+    pr = chip_data.get('profit_ratio', 0)
+    concentrated = chip_data.get('chip_concentrated', False)
+    tag = "🔒" if concentrated else "🔓"
+    return f"{tag}{c90:.1f}%|获利{pr:.0%}"
 
 def _filter_by_price(items: list, max_price: float = None) -> list:
     """按收盘价筛选 ≤ max_price 的股票"""
@@ -132,8 +144,13 @@ def generate_daily_report(logic_result: dict, flow_result: dict, temperature: di
     if candidates:
         lines.append("### 逻辑链候选股（领涨行业优先排序）")
         lines.append("")
-        lines.append("| 代码 | 名称 | 行业 | 信号类型 | 现价 | 涨跌幅% | 行业牛市占比 | 共振分 | 沉淀率 | 资金验证 |")
-        lines.append("|------|------|------|---------|------|--------|------------|--------|--------|----------|")
+        # 逻辑链候选股表格：含概念板块和综合评分
+        has_concept = config.CONCEPT_ENABLED
+        has_scoring = config.SCORING_ENABLED
+        concept_hdr = " | 概念" if has_concept else ""
+        score_hdr = " | 综合评分" if has_scoring else ""
+        lines.append(f"| 代码 | 名称 | 行业{concept_hdr} | 信号类型 | 现价 | 涨跌幅% | 行业牛市占比 | 共振分 | 沉淀率 | 筹码 | 资金验证{score_hdr} |")
+        lines.append(f"|------|------|------{'+------' if has_concept else ''} |---------|------|--------|------------|--------|--------|------|----------{'+------' if has_scoring else ''} |")
         for c in candidates:
             st_desc = sig_desc.get(c.get('signal_type', ''), c.get('signal_type', ''))
             code = c.get('code', '')
@@ -148,17 +165,31 @@ def generate_daily_report(logic_result: dict, flow_result: dict, temperature: di
             res = resonance_scores.get(code, {})
             res_str = f"{res.get('resonance_score', 0):+d} {res.get('label', '')}"
             
+            # 筹码数据
+            chip = c.get('chip', {})
+            chip_str = _format_chip_summary(chip)
+            
+            # 概念板块
+            concept_str = f" | {c.get('concept', '-')}" if has_concept else ""
+            
+            # 综合评分
+            score_str = ""
+            if has_scoring and c.get('score'):
+                s = c['score']
+                score_str = f" | {s.get('total_score', 0):.1f}({s.get('grade', '')})"
+            
             lines.append(
                 f"| {code} "
                 f"| {c.get('name', '')} "
-                f"| {c.get('industry', '')} "
+                f"| {c.get('industry', '')}{concept_str} "
                 f"| {st_desc} "
                 f"| {c.get('close', 0):.2f} "
                 f"| {c.get('pct_change', 0):.2f} "
                 f"| {c.get('ind_bull_ratio', 0):.0%} "
                 f"| {res_str} "
                 f"| {sed_str} "
-                f"| {mp_str} |"
+                f"| {chip_str} "
+                f"| {mp_str}{score_str} |"
             )
         lines.append("")
     else:
@@ -283,6 +314,26 @@ def generate_daily_report(logic_result: dict, flow_result: dict, temperature: di
             lines.append(f"- {s.get('name', '')}({s.get('code', '')}): 净流入{s.get('net_flow', 0)/1e8:.2f}亿, 涨跌{s.get('pct', 0):.2f}%")
         lines.append("")
     
+    # ── 概念板块资金流（v2.2新增）──
+    concept_hot = sector_flow.get('concept_hot', [])
+    concept_cold = sector_flow.get('concept_cold', [])
+    if config.CONCEPT_ENABLED and concept_hot:
+        lines.append("### 5. 概念板块资金流")
+        lines.append("")
+        lines.append("**🔥 热门概念 TOP10：**")
+        lines.append("")
+        lines.append("| 排名 | 概念 | 净流入(亿) | 涨跌幅(%) |")
+        lines.append("|------|------|-----------|----------|")
+        for i, s in enumerate(concept_hot[:10]):
+            lines.append(f"| {i+1} | [概念]{s['name']} | {s['net_flow']:.2f} | {s['pct']:.2f} |")
+        lines.append("")
+        if concept_cold:
+            lines.append("**❄️ 冷门概念 TOP5：**")
+            lines.append("")
+            for s in concept_cold[:5]:
+                lines.append(f"- [概念]{s['name']}: 净流出{abs(s['net_flow']):.2f}亿")
+            lines.append("")
+    
     lines.append("---")
     lines.append("")
     
@@ -306,12 +357,16 @@ def generate_daily_report(logic_result: dict, flow_result: dict, temperature: di
     lines.append(f"- 未通过: {len(rejected)}只 ❌")
     lines.append("")
     
-    # 共振候选股（含多周期资金验证+沉淀率+三层共振）
+    # 共振候选股（含多周期资金验证+沉淀率+三层共振+概念+评分）
     if gated:
-        lines.append("### 🎯 两弦共振候选股（可操作）")
+        lines.append("### 🎯 两弦共振候选股（可操作，按综合评分排序）")
         lines.append("")
-        lines.append("| 代码 | 名称 | 行业 | 信号 | 现价 | 涨跌幅% | 行业牛市占比 | 板块净流入 | 共振分 | 沉淀率 | 资金验证 |")
-        lines.append("|------|------|------|-----|------|--------|------------|----------|--------|--------|----------|")
+        has_concept = config.CONCEPT_ENABLED
+        has_scoring = config.SCORING_ENABLED
+        concept_hdr = " | 概念" if has_concept else ""
+        score_hdr = " | 综合评分" if has_scoring else ""
+        lines.append(f"| 代码 | 名称 | 行业{concept_hdr} | 信号 | 现价 | 涨跌幅% | 行业牛市占比 | 板块净流入 | 共振分 | 沉淀率 | 筹码 | 资金验证{score_hdr} |")
+        lines.append(f"|------|------|------{'+------' if has_concept else ''} |-----|------|--------|------------|----------|--------|--------|------|----------{'+------' if has_scoring else ''} |")
         sig_desc = {'limit_up': '涨停', 'new_high_vol': '放量新高', 'new_high': '半年新高'}
         for c in gated:
             st_desc = sig_desc.get(c.get('signal_type', ''), c.get('signal_type', ''))
@@ -331,10 +386,23 @@ def generate_daily_report(logic_result: dict, flow_result: dict, temperature: di
             res = resonance_scores.get(code, {})
             res_str = f"{res.get('resonance_score', 0):+d} {res.get('label', '')}"
             
+            # 筹码数据
+            chip = c.get('chip', {})
+            chip_str = _format_chip_summary(chip)
+            
+            # 概念板块
+            concept_str = f" | {c.get('concept', '-')}" if has_concept else ""
+            
+            # 综合评分
+            score_str = ""
+            if has_scoring and c.get('score'):
+                s = c['score']
+                score_str = f" | {s.get('total_score', 0):.1f}({s.get('grade', '')})"
+            
             lines.append(
                 f"| {code} "
                 f"| {c.get('name', '')} "
-                f"| {c.get('industry', '')} "
+                f"| {c.get('industry', '')}{concept_str} "
                 f"| {st_desc} "
                 f"| {c.get('close', 0):.2f} "
                 f"| {c.get('pct_change', 0):.2f} "
@@ -342,7 +410,8 @@ def generate_daily_report(logic_result: dict, flow_result: dict, temperature: di
                 f"| {sec_flow:.2f}亿 "
                 f"| {res_str} "
                 f"| {sed_str} "
-                f"| {mp_str} |"
+                f"| {chip_str} "
+                f"| {mp_str}{score_str} |"
             )
         lines.append("")
         
@@ -357,11 +426,23 @@ def generate_daily_report(logic_result: dict, flow_result: dict, temperature: di
             mp = multi_period.get(code, {})
             mp_signal = mp.get('signal', '')
             
+            chip = c.get('chip', {})
+            chip_detail = ""
+            if chip:
+                c90 = chip.get('concentration_90', 0)
+                pr = chip.get('profit_ratio', 0)
+                avg_cost = chip.get('avg_cost', 0)
+                concentrated = chip.get('chip_concentrated', False)
+                chip_label = "🔒筹码集中" if concentrated else "🔓筹码分散"
+                chip_detail = f"  - 筹码分析: {chip_label}(90%集中度{c90:.1f}%, 获利盘{pr:.0%}, 均成本{avg_cost:.2f})"
+            
             lines.append(f"- **{name}** ({st}, {industry}):")
             lines.append(f"  - 买入价: 次日开盘价（T+1执行）")
             lines.append(f"  - 止损: MA20保底 + 最高点回撤8%移动止盈")
             lines.append(f"  - 退出: 月线转熊 或 最长持有60日")
             lines.append(f"  - 资金验证: {mp_signal}")
+            if chip_detail:
+                lines.append(chip_detail)
         lines.append("")
     else:
         lines.append("*今日无两弦共振候选股 — 不操作*")
@@ -478,6 +559,13 @@ def generate_daily_report(logic_result: dict, flow_result: dict, temperature: di
     lines.append("> **三层共振**: 大盘+板块+个股三层趋势同向评分(-3~+3) → 高胜率介入")
     lines.append("> **主线军捕获器**: 近N日启动板块+板块内龙头(沉淀率排序) → 锁定主线方向")
     lines.append("> **沉淀率榜单**: 逻辑链+主线军合并去重按沉淀率排序 → 一眼锁定资金锁仓最硬的标的")
+    if config.CONCEPT_ENABLED:
+        lines.append("> **概念板块扩展**: 31申万行业+热门概念板块(~50个) → 板块覆盖更全面，概念风口不遗漏")
+    if config.SCORING_ENABLED:
+        lines.append("> **3维综合评分**: 资金(35%)+技术(35%)+趋势(30%)三维评分排序 → S/A/B/C/D五档评级")
+        lines.append("> 　资金维度: 3日净流入百分位(0-15) + 沉淀率(0-10) + 当日净流入(0-10)")
+        lines.append("> 　技术维度: MACD方向(0-12) + 量能突破(0-8) + 底背离(0-8) + 筹码集中度(0-7)")
+        lines.append("> 　趋势维度: 三层共振(0-15) + MA20上方(0-5) + 20日涨幅(0-10)")
     lines.append("> **AND门控**: 两弦信号对齐才操作，缺一不可")
     lines.append("> **止损**: MA20保底 + 8%移动止盈 + 月线转熊退出 + 60日最长持有")
     lines.append("")
@@ -571,6 +659,14 @@ def generate_push_content(logic_result: dict, flow_result: dict, temperature: di
             lines.append(f"**板块资金**: 热门: {', '.join([s['name'] + f'({s['net_flow']:+.1f}亿)' for s in hot])}")
         lines.append("")
     
+    # ── 概念板块资金流摘要（v2.2新增）──
+    concept_hot = sector_flow.get('concept_hot', [])[:5]
+    if config.CONCEPT_ENABLED and concept_hot:
+        lines.append("**🔬 热门概念 TOP5：**")
+        for s in concept_hot:
+            lines.append(f"  [概念]{s['name']}: 净流入{s['net_flow']:+.2f}亿 涨跌{s['pct']:.2f}%")
+        lines.append("")
+    
     # 底背离摘要
     if divergence_signals:
         lines.append(f"**🔻 底背离买点**: {len(divergence_signals)}只月线牛市股出现日线MACD底背离（≤{config.MAX_PRICE}元）")
@@ -588,7 +684,7 @@ def generate_push_content(logic_result: dict, flow_result: dict, temperature: di
     
     if gated:
         resonance_scores = flow_result.get('resonance_scores', {})
-        lines.append("**🎯 共振候选股（含资金验证+沉淀率+共振分）:**")
+        lines.append("**🎯 共振候选股（含资金验证+沉淀率+共振分+筹码+评分）:**")
         for c in gated:
             st = sig_desc.get(c.get('signal_type', ''), '')
             code = c.get('code', '')
@@ -602,12 +698,35 @@ def generate_push_content(logic_result: dict, flow_result: dict, temperature: di
             res = resonance_scores.get(code, {})
             res_str = f"共振{res.get('resonance_score', 0):+d} {res.get('label', '')}"
             
-            lines.append(f"  - {c.get('name', code)} | {st} | {c.get('industry', '')} | ¥{c.get('close', 0):.2f} | 涨跌{c.get('pct_change', 0):.1f}%")
+            # 筹码数据
+            chip = c.get('chip', {})
+            chip_short = ""
+            if chip:
+                c90 = chip.get('concentration_90', 0)
+                pr = chip.get('profit_ratio', 0)
+                concentrated = chip.get('chip_concentrated', False)
+                chip_tag = "🔒集中" if concentrated else "🔓分散"
+                chip_short = f"筹码{chip_tag}{c90:.0f}%"
+            
+            # 概念板块
+            concept_str = ""
+            if config.CONCEPT_ENABLED and c.get('concept'):
+                concept_str = f" | 概念:{c['concept']}"
+            
+            # 综合评分
+            score_str = ""
+            if config.SCORING_ENABLED and c.get('score'):
+                s = c['score']
+                score_str = f" | 评分:{s.get('total_score', 0):.1f}({s.get('grade', '')})"
+            
+            lines.append(f"  - {c.get('name', code)} | {st} | {c.get('industry', '')} | ¥{c.get('close', 0):.2f} | 涨跌{c.get('pct_change', 0):.1f}%{concept_str}{score_str}")
             detail_parts = [f"资金验证: {mp_str}"]
             if sed_str:
                 detail_parts.append(sed_str)
             if res_str:
                 detail_parts.append(res_str)
+            if chip_short:
+                detail_parts.append(chip_short)
             lines.append(f"    {' | '.join(detail_parts)}")
         lines.append("")
         

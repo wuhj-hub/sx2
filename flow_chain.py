@@ -134,10 +134,10 @@ def step2_index_direction() -> dict:
 
 
 def step3_sector_flow() -> dict:
-    """板块资金流热力图（增强版：多周期全景）"""
-    log.info("  [资金流弦] 第三步：板块资金流（多周期全景）")
+    """板块资金流热力图（增强版：多周期全景 + 概念板块）"""
+    log.info("  [资金流弦] 第三步：板块资金流（多周期全景+概念板块）")
     
-    # 尝试获取多周期板块资金流
+    # 尝试获取多周期板块资金流（行业）
     heatmap_df = pd.DataFrame()
     if config.HEATMAP_ENABLED:
         try:
@@ -152,10 +152,14 @@ def step3_sector_flow() -> dict:
             sector_flow = df.get_sector_fund_flow(indicator="今日")
         except Exception as e:
             log.warning(f"  板块资金流获取失败: {e}")
-            return {'hot_sectors': [], 'cold_sectors': [], 'sector_net_flow': {}, 'heatmap': pd.DataFrame()}
+            return {'hot_sectors': [], 'cold_sectors': [], 'sector_net_flow': {}, 
+                    'heatmap': pd.DataFrame(), 'concept_hot': [], 'concept_cold': [],
+                    'concept_net_flow': {}}
         
         if sector_flow.empty:
-            return {'hot_sectors': [], 'cold_sectors': [], 'sector_net_flow': {}, 'heatmap': pd.DataFrame()}
+            return {'hot_sectors': [], 'cold_sectors': [], 'sector_net_flow': {}, 
+                    'heatmap': pd.DataFrame(), 'concept_hot': [], 'concept_cold': [],
+                    'concept_net_flow': {}}
         
         # 构建板块净流入映射
         sector_net_flow = {}
@@ -193,6 +197,9 @@ def step3_sector_flow() -> dict:
         hot = sorted(hot, key=lambda x: x['net_flow'], reverse=True)[:10]
         cold = sorted(cold, key=lambda x: x['net_flow'])[:10]
         
+        # ── 概念板块资金流（补充）──
+        concept_hot, concept_cold, concept_net_flow = _get_concept_flow_data()
+        
         log.info(f"  热门板块 TOP3: {[s['name'] for s in hot[:3]]}")
         
         return {
@@ -200,6 +207,9 @@ def step3_sector_flow() -> dict:
             'cold_sectors': cold,
             'sector_net_flow': sector_net_flow,
             'heatmap': pd.DataFrame(),
+            'concept_hot': concept_hot,
+            'concept_cold': concept_cold,
+            'concept_net_flow': concept_net_flow,
         }
     
     # 多周期数据成功，从中提取各字段
@@ -234,14 +244,62 @@ def step3_sector_flow() -> dict:
     hot = sorted(hot, key=lambda x: x['net_flow'], reverse=True)[:config.HEATMAP_TOP_N]
     cold = sorted(cold, key=lambda x: x['net_flow'])[:5]
     
+    # ── 概念板块资金流（补充）──
+    concept_hot, concept_cold, concept_net_flow = _get_concept_flow_data()
+    
     log.info(f"  热门板块 TOP3: {[s['name'] for s in hot[:3]]}")
+    if concept_hot:
+        log.info(f"  热门概念 TOP3: {[s['name'] for s in concept_hot[:3]]}")
     
     return {
         'hot_sectors': hot,
         'cold_sectors': cold,
         'sector_net_flow': sector_net_flow,
         'heatmap': heatmap_df,
+        'concept_hot': concept_hot,
+        'concept_cold': concept_cold,
+        'concept_net_flow': concept_net_flow,
     }
+
+
+def _get_concept_flow_data() -> tuple:
+    """获取概念板块资金流数据，返回 (hot, cold, net_flow_map)"""
+    concept_hot = []
+    concept_cold = []
+    concept_net_flow = {}
+    
+    if not config.CONCEPT_ENABLED:
+        return concept_hot, concept_cold, concept_net_flow
+    
+    try:
+        concept_df = df.get_concept_sector_fund_flow()
+        if concept_df is not None and not concept_df.empty:
+            for _, row in concept_df.iterrows():
+                name = str(row.get('名称', ''))
+                net_flow_raw = float(row.get('净流入', 0))
+                pct = float(row.get('涨跌幅', 0))
+                # 统一转换为亿元
+                if abs(net_flow_raw) > 1e10:
+                    net_flow_yi = net_flow_raw / 1e8
+                elif abs(net_flow_raw) > 1e6:
+                    net_flow_yi = net_flow_raw / 1e8
+                else:
+                    net_flow_yi = net_flow_raw  # 可能已经是亿
+                
+                concept_net_flow[name] = net_flow_yi
+                entry = {'name': name, 'net_flow': net_flow_yi, 'pct': pct}
+                if net_flow_yi > 0:
+                    concept_hot.append(entry)
+                else:
+                    concept_cold.append(entry)
+            
+            concept_hot.sort(key=lambda x: x['net_flow'], reverse=True)
+            concept_cold.sort(key=lambda x: x['net_flow'])
+            log.info(f"  [概念] 资金流入{len(concept_hot)}个, 流出{len(concept_cold)}个")
+    except Exception as e:
+        log.warning(f"  [概念] 资金流获取失败: {e}")
+    
+    return concept_hot, concept_cold, concept_net_flow
 
 
 def step4_individual_flow(codes: list = None) -> dict:
@@ -381,19 +439,24 @@ def calc_three_layer_resonance(temperature: dict, sector_flow: dict,
     # ── 板块层 & 个股层 ──
     result = {}
     sector_net_flow = sector_flow.get('sector_net_flow', {})
+    concept_net_flow = sector_flow.get('concept_net_flow', {})
     
     for cand in candidates:
         code = cand.get('code', '')
         industry = cand.get('industry', '')
         sina_industry = _map_industry_to_sina(industry)
+        concept = cand.get('concept', '')  # 概念板块名
         
         # 板块层：看所属板块3日/5日净流入
         sector_layer = 0
         # 从hot_sectors获取板块多周期数据
         hot_sectors = sector_flow.get('hot_sectors', [])
         cold_sectors = sector_flow.get('cold_sectors', [])
+        concept_hot = sector_flow.get('concept_hot', [])
+        concept_cold = sector_flow.get('concept_cold', [])
         
         sector_found = False
+        # 先在行业板块中查找
         for s in hot_sectors + cold_sectors:
             if s.get('name') == sina_industry or sina_industry in s.get('name', ''):
                 d3 = s.get('d3', 0)
@@ -407,13 +470,33 @@ def calc_three_layer_resonance(temperature: dict, sector_flow: dict,
                 sector_found = True
                 break
         
+        # 行业板块未找到，尝试概念板块
+        if not sector_found and concept:
+            for s in concept_hot + concept_cold:
+                if concept in s.get('name', '') or s.get('name', '') in concept:
+                    net = s.get('net_flow', 0)
+                    if net > 0:
+                        sector_layer = 1
+                    elif net < 0:
+                        sector_layer = -1
+                    sector_found = True
+                    break
+        
         # 如果板块全景数据中没有，用今日净流入判断
         if not sector_found:
+            # 先查行业净流入
             net = sector_net_flow.get(sina_industry, 0)
             if net > 0:
                 sector_layer = 1
             elif net < 0:
                 sector_layer = -1
+            # 再查概念净流入（如果有）
+            if concept and sector_layer == 0:
+                cnet = concept_net_flow.get(concept, 0)
+                if cnet > 0:
+                    sector_layer = 1
+                elif cnet < 0:
+                    sector_layer = -1
         
         # ── 个股层 ──
         stock_layer = 0
@@ -616,9 +699,28 @@ def run_and_gate(logic_candidates: list, breath: dict, sector_data: dict,
                     if sina_industry in sina_name or sina_name in sina_industry:
                         sector_net = net_val
                         break
-            if sector_net is not None and sector_net <= 0:
+            # 如果行业板块未匹配，尝试概念板块
+            concept = cand.get('concept', '')
+            concept_net = None
+            if sector_net is None and concept:
+                concept_net = sector_data.get('concept_net_flow', {}).get(concept, None)
+                # 模糊匹配概念板块
+                if concept_net is None:
+                    for cname, cnet_val in sector_data.get('concept_net_flow', {}).items():
+                        if concept in cname or cname in concept:
+                            concept_net = cnet_val
+                            break
+            
+            # 判断：行业或概念板块任一净流入>0即通过
+            if sector_net is not None and sector_net > 0:
+                pass  # 行业板块净流入，通过
+            elif concept_net is not None and concept_net > 0:
+                pass  # 概念板块净流入，通过
+            elif sector_net is not None and sector_net <= 0 and (concept_net is None or concept_net <= 0):
                 reject_reasons.append(f'{industry}({sina_industry})板块资金净流出({abs(sector_net):.2f}亿)')
-            elif sector_net is None:
+            elif sector_net is None and concept_net is not None and concept_net <= 0:
+                reject_reasons.append(f'{concept}概念板块资金净流出({abs(concept_net):.2f}亿)')
+            elif sector_net is None and concept_net is None:
                 reject_reasons.append(f'{industry}板块数据缺失')
         
         # 门控3: 个股主力净流入>0

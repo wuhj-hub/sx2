@@ -21,7 +21,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import config
 from logic_chain import run_logic_scan
 from flow_chain import run_flow_scan
-from data_fetcher import get_market_temperature
+from data_fetcher import get_market_temperature, batch_get_chip_distribution, get_concept_sector_stocks
+from scoring import batch_calculate_scores
 from reporter import generate_daily_report, generate_push_content
 from push import push_report
 
@@ -79,6 +80,44 @@ def run_shuangxian_v2(target_date: str = None) -> dict:
     candidates = logic_result.get('candidates', [])
     log.info(f"  逻辑链输出: {len(candidates)}只候选股")
     
+    # ── 第1.1步：概念板块成分股获取 ─────────────────────
+    concept_map = {}
+    concept_stocks = {}
+    if config.CONCEPT_ENABLED:
+        log.info(">>> 概念板块成分股获取 <<<")
+        try:
+            concept_map, concept_stocks = get_concept_sector_stocks()
+            log.info(f"  概念板块: {len(concept_stocks)}个, 映射{len(concept_map)}只股票")
+            # 为候选股补充概念板块属性
+            for cand in candidates:
+                symbol = cand.get('symbol', '')
+                if symbol in concept_map:
+                    cand['concept'] = concept_map[symbol]
+                else:
+                    cand['concept'] = ''
+            # 也为底背离信号补充概念
+            for div in logic_result.get('divergence_signals', []):
+                symbol = div.get('symbol', '')
+                if symbol in concept_map:
+                    div['concept'] = concept_map[symbol]
+                else:
+                    div['concept'] = ''
+            # 保存到logic_result供后续使用
+            logic_result['concept_map'] = concept_map
+            logic_result['concept_stocks'] = concept_stocks
+        except Exception as e:
+            log.error(f"  概念板块获取失败: {e}")
+    
+    # ── 第1.5步：筹码集中度分析 ────────────────────────
+    if config.CHIP_ENABLED and candidates:
+        log.info(">>> 筹码集中度分析 <<<")
+        try:
+            candidates = batch_get_chip_distribution(candidates)
+            chip_concentrated = sum(1 for c in candidates if c.get('chip', {}).get('chip_concentrated'))
+            log.info(f"  筹码分析完成: {len(candidates)}只, 其中{chip_concentrated}只筹码集中")
+        except Exception as e:
+            log.error(f"  筹码分析失败: {e}")
+    
     # ── 第二步：资金流弦 ──────────────────────────────
     log.info(">>> 资金流弦：七步复盘 + 板块全景 + 多周期验证 + 三层共振 + 主线军 <<<")
     try:
@@ -102,6 +141,31 @@ def run_shuangxian_v2(target_date: str = None) -> dict:
     
     gated = flow_result.get('and_gate', {}).get('gated_candidates', [])
     log.info(f"  AND门控: {len(gated)}只共振")
+    
+    # ── 第2.5步：3维综合评分排序（v2.2新增）──────────
+    if config.SCORING_ENABLED and gated:
+        log.info(">>> 候选股3维综合评分 <<<")
+        try:
+            multi_period = flow_result.get('multi_period', {})
+            resonance_scores = flow_result.get('resonance_scores', {})
+            # 收集底背离的symbol
+            divergence_symbols = set()
+            for div in logic_result.get('divergence_signals', []):
+                if div.get('symbol'):
+                    divergence_symbols.add(div['symbol'])
+            
+            gated = batch_calculate_scores(
+                candidates=gated,
+                multi_period=multi_period,
+                resonance_scores=resonance_scores,
+                kline_cache={},
+                divergence_symbols=divergence_symbols,
+            )
+            # 更新回flow_result
+            flow_result['and_gate']['gated_candidates'] = gated
+            log.info(f"  评分排序完成: TOP {gated[0].get('name','')}={gated[0].get('score',{}).get('total_score',0):.1f}分" if gated else "  无候选股")
+        except Exception as e:
+            log.error(f"  评分计算失败: {e}")
     
     # ── 第三步：生成报告 ──────────────────────────────
     log.info(">>> 生成报告 <<<")
