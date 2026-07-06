@@ -27,13 +27,28 @@ def _format_chip_summary(chip_data: dict) -> str:
     tag = "🔒" if concentrated else "🔓"
     return f"{tag}{c90:.1f}%|获利{pr:.0%}"
 
-def _filter_by_price(items: list, max_price: float = None) -> list:
-    """按收盘价筛选 ≤ max_price 的股票"""
-    if max_price is None:
-        max_price = config.MAX_PRICE
-    if max_price <= 0:
-        return items  # 0 或负数表示不限制
-    return [item for item in items if item.get('close', 0) > 0 and item.get('close', 0) <= max_price]
+def _is_low_price(item: dict, threshold: float = None) -> bool:
+    """判断股票是否为低价股（≤threshold元）"""
+    if threshold is None:
+        threshold = config.MAX_PRICE
+    return 0 < item.get('close', 0) <= threshold
+
+
+def _low_price_tag(item: dict) -> str:
+    """低价股标记：≤10元显示 💰 标记"""
+    if _is_low_price(item):
+        return " 💰"
+    return ""
+
+
+def _low_price_count_text(items: list, threshold: float = None) -> str:
+    """统计低价股数量，生成附加说明文本"""
+    if threshold is None:
+        threshold = config.MAX_PRICE
+    low_count = sum(1 for item in items if _is_low_price(item, threshold))
+    if low_count > 0:
+        return f"（其中💰≤{threshold:.0f}元: {low_count}只）"
+    return ""
 
 
 def _format_flow_yi(val):
@@ -108,10 +123,10 @@ def generate_daily_report(logic_result: dict, flow_result: dict, temperature: di
     candidates = logic_result.get('candidates', [])
     leading_ind = logic_result.get('leading_industries', [])
     
-    # 价格筛选
-    candidates = _filter_by_price(candidates)
+    # 全量展示，低价股💰标记
+    low_tag = _low_price_count_text(candidates)
     
-    lines.append(f"### 月线牛市状态 ({mk})")
+    lines.append(f"### 月线牛市状态 ({mk}){low_tag}")
     lines.append(f"- 月线牛市股票: **{bull_count}只**")
     lines.append("")
     
@@ -205,10 +220,10 @@ def generate_daily_report(logic_result: dict, flow_result: dict, temperature: di
     
     lines.append("## 二、底背离买点信号")
     lines.append("")
-    # 价格筛选
-    divergence_signals = _filter_by_price(divergence_signals)
+    # 全量展示，低价股💰标记
+    low_tag = _low_price_count_text(divergence_signals)
     if divergence_signals:
-        lines.append(f"在月线牛市股票中发现 **{len(divergence_signals)}只** 出现日线MACD底背离（趋势回踩买点，股价≤{config.MAX_PRICE}元）：")
+        lines.append(f"在月线牛市股票中发现 **{len(divergence_signals)}只** 出现日线MACD底背离（趋势回踩买点）{low_tag}：")
         lines.append("")
         lines.append("| 代码 | 名称 | 行业 | 背离低点日期 | 现价 | 前低 | 当前低 | 回升% | 间距(天) | 行业牛市占比 |")
         lines.append("|------|------|------|------------|------|------|--------|-------|---------|------------|")
@@ -346,15 +361,15 @@ def generate_daily_report(logic_result: dict, flow_result: dict, temperature: di
     gated = gate.get('gated_candidates', [])
     rejected = gate.get('rejected_candidates', [])
     
-    # 价格筛选
-    gated = _filter_by_price(gated)
-    rejected = _filter_by_price(rejected)
+    # 全量展示，低价股💰标记
+    gated_low_tag = _low_price_count_text(gated)
+    rejected_low_tag = _low_price_count_text(rejected)
     
     lines.append(f"### 门控状态")
     lines.append(f"- 市场门控: {'✅ 通过' if gate_summary.get('market_ok') else '❌ 冷区'}")
     lines.append(f"- 逻辑链候选: {gate_summary.get('total_candidates', 0)}只")
-    lines.append(f"- 两弦共振: **{len(gated)}只** ✅（≤{config.MAX_PRICE}元）")
-    lines.append(f"- 未通过: {len(rejected)}只 ❌")
+    lines.append(f"- 两弦共振: **{len(gated)}只** ✅{gated_low_tag}")
+    lines.append(f"- 未通过: {len(rejected)}只 ❌{rejected_low_tag}")
     lines.append("")
     
     # 共振候选股（含多周期资金验证+沉淀率+三层共振+概念+评分）
@@ -466,7 +481,7 @@ def generate_daily_report(logic_result: dict, flow_result: dict, temperature: di
     lines.append("")
     
     if main_line_dragons:
-        lines.append(f"扫描近{config.DRAGON_LOOKBACK_DAYS}日资金持续流入的启动板块，按沉淀率识别板块内龙头（≤{config.MAX_PRICE}元）：")
+        lines.append(f"扫描近{config.DRAGON_LOOKBACK_DAYS}日资金持续流入的启动板块，按沉淀率识别板块内龙头：")
         lines.append("")
         
         for i, sector in enumerate(main_line_dragons[:config.DRAGON_TOP_SECTORS]):
@@ -480,10 +495,8 @@ def generate_daily_report(logic_result: dict, flow_result: dict, temperature: di
             lines.append("")
             
             if leaders:
-                # 过滤≤MAX_PRICE
-                filtered_leaders = [l for l in leaders if l.get('close', 0) <= config.MAX_PRICE and l.get('close', 0) > 0]
-                if not filtered_leaders:
-                    filtered_leaders = leaders[:3]  # 没有≤10元的，展示前3
+                # 全量展示，按沉淀率排序
+                filtered_leaders = leaders[:config.DRAGON_LEADERS_PER_SECTOR]
                 
                 lines.append("| 排名 | 代码 | 名称 | 现价 | 涨跌幅% | 3D净流入 | 沉淀率 |")
                 lines.append("|------|------|------|------|--------|---------|--------|")
@@ -512,11 +525,11 @@ def generate_daily_report(logic_result: dict, flow_result: dict, temperature: di
     
     lines.append("## 六、资金沉淀率综合榜单 TOP30")
     lines.append("")
-    lines.append(f"合并逻辑链候选股+主线军成分股，按沉淀率(3日主力净流入/3日总成交额)降序排列（≤{config.MAX_PRICE}元）：")
+    low_tag = _low_price_count_text(sedimentation_rank)
+    lines.append(f"合并逻辑链候选股+主线军成分股，按沉淀率(3日主力净流入/3日总成交额)降序排列{low_tag}：")
     lines.append("")
     
-    # 价格筛选
-    sedimentation_rank = _filter_by_price(sedimentation_rank)
+    # 全量展示，不再按价格筛选
     
     if sedimentation_rank:
         lines.append("| 排名 | 代码 | 名称 | 行业 | 现价 | 涨跌幅% | 3D净流入 | 沉淀率 | 来源 | 所属板块 |")
@@ -598,9 +611,7 @@ def generate_push_content(logic_result: dict, flow_result: dict, temperature: di
     divergence_signals = logic_result.get('divergence_signals', [])
     multi_period = flow_result.get('multi_period', {})
     
-    # 价格筛选（≤MAX_PRICE）
-    gated = _filter_by_price(gated)
-    divergence_signals = _filter_by_price(divergence_signals)
+    # 全量展示，不再按价格筛选，低价股加💰标记
     
     # 标题逻辑
     if breath.get('status') == '冷区':
