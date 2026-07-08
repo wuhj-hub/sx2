@@ -11,6 +11,7 @@ import logging
 from datetime import datetime
 
 import config
+from monthly_pool import get_pool_sorted
 
 log = logging.getLogger("shuangxian.reporter")
 
@@ -51,6 +52,68 @@ def _low_price_count_text(items: list, threshold: float = None) -> str:
     return ""
 
 
+def _generate_monthly_pool_section(monthly_pool_data: dict = None) -> list:
+    """
+    生成月度股池段落（Markdown格式），按count降序排列
+    
+    参数:
+        monthly_pool_data: {code: {stock_record_dict}, ...} 或 None
+    
+    返回:
+        lines: Markdown行列表
+    """
+    lines = []
+    
+    if not config.MONTHLY_POOL_ENABLED:
+        return lines
+    
+    if monthly_pool_data is None:
+        monthly_pool_data = {}
+    
+    # 按count降序排列
+    sorted_pool = sorted(
+        monthly_pool_data.values(),
+        key=lambda x: (x.get('count', 0), x.get('last_seen', '')),
+        reverse=True
+    )
+    
+    year_month = datetime.now().strftime('%Y-%m')
+    total = len(sorted_pool)
+    both_signals = sum(1 for r in sorted_pool if len(r.get('signals', [])) >= 2)
+    
+    lines.append(f"## 📋 本月股池（{year_month}）")
+    lines.append("")
+    lines.append(f"> 累积本月所有共振+低吸信号中股价≤{config.MAX_PRICE:.0f}元的股票，共 **{total}只**（双信号{both_signals}只）")
+    lines.append("")
+    
+    if sorted_pool:
+        lines.append("| 排名 | 代码 | 名称 | 行业 | 首次出现 | 最近出现 | 出现次数 | 信号类型 |")
+        lines.append("|------|------|------|------|---------|---------|---------|---------|")
+        for i, r in enumerate(sorted_pool):
+            signals_str = '+'.join(r.get('signals', []))
+            # 双信号加粗标记
+            count_str = f"**{r.get('count', 0)}**" if r.get('count', 0) >= 2 else str(r.get('count', 0))
+            lines.append(
+                f"| {i+1} "
+                f"| {r.get('code', '')} "
+                f"| {r.get('name', '')} "
+                f"| {r.get('industry', '')} "
+                f"| {r.get('first_seen', '')} "
+                f"| {r.get('last_seen', '')} "
+                f"| {count_str} "
+                f"| {signals_str} |"
+            )
+        lines.append("")
+    else:
+        lines.append("*本月暂无股池记录*")
+        lines.append("")
+    
+    lines.append("---")
+    lines.append("")
+    
+    return lines
+
+
 def _format_flow_yi(val):
     """格式化资金流数值为亿元显示"""
     if val is None:
@@ -58,7 +121,7 @@ def _format_flow_yi(val):
     return f"{val/1e8:.2f}亿" if abs(val) >= 1e8 else f"{val/1e4:.1f}万"
 
 
-def generate_daily_report(logic_result: dict, flow_result: dict, temperature: dict = None) -> str:
+def generate_daily_report(logic_result: dict, flow_result: dict, temperature: dict = None, monthly_pool_data: dict = None) -> str:
     """生成双弦系统v2.1每日报告"""
     now = datetime.now()
     date_str = now.strftime('%Y-%m-%d')
@@ -111,6 +174,10 @@ def generate_daily_report(logic_result: dict, flow_result: dict, temperature: di
         lines.append("")
         lines.append("---")
         lines.append("")
+    
+    # ── 月度股池 ──────────────────────────────────────
+    pool_lines = _generate_monthly_pool_section(monthly_pool_data)
+    lines.extend(pool_lines)
     
     # ── 逻辑链弦 ──────────────────────────────────────
     lines.append("## 一、逻辑链弦：月线牛市 + 日线突破")
@@ -595,7 +662,7 @@ def generate_daily_report(logic_result: dict, flow_result: dict, temperature: di
     return filepath
 
 
-def generate_push_content(logic_result: dict, flow_result: dict, temperature: dict = None) -> tuple:
+def generate_push_content(logic_result: dict, flow_result: dict, temperature: dict = None, monthly_pool_data: dict = None) -> tuple:
     """
     生成推送内容（标题 + 正文）
     返回: (title, content)
@@ -640,6 +707,25 @@ def generate_push_content(logic_result: dict, flow_result: dict, temperature: di
         if sub:
             sub_str = ' | '.join([f"{k}+{v}" for k, v in sub.items()])
             lines.append(f"  {sub_str}")
+        lines.append("")
+    
+    # ── 月度股池摘要 ──
+    if config.MONTHLY_POOL_ENABLED and monthly_pool_data:
+        sorted_pool = sorted(
+            monthly_pool_data.values(),
+            key=lambda x: (x.get('count', 0), x.get('last_seen', '')),
+            reverse=True
+        )
+        total = len(sorted_pool)
+        both_signals = sum(1 for r in sorted_pool if len(r.get('signals', [])) >= 2)
+        year_month = datetime.now().strftime('%Y-%m')
+        lines.append(f"**📋 本月股池（{year_month}）**: {total}只≤{config.MAX_PRICE:.0f}元（双信号{both_signals}只）")
+        if sorted_pool:
+            top5 = sorted_pool[:5]
+            for r in top5:
+                signals_str = '+'.join(r.get('signals', []))
+                count_str = f"×{r.get('count', 0)}"
+                lines.append(f"  - {r.get('name', r.get('code', ''))}({r.get('code', '')}) | {r.get('industry', '')} | {signals_str}{count_str} | {r.get('first_seen', '')}~{r.get('last_seen', '')}")
         lines.append("")
     
     # 逻辑链摘要

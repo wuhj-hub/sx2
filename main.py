@@ -25,6 +25,7 @@ from data_fetcher import get_market_temperature, batch_get_chip_distribution, ge
 from scoring import batch_calculate_scores
 from reporter import generate_daily_report, generate_push_content
 from push import push_report
+from monthly_pool import update_pool
 
 
 def setup_logging(level=logging.INFO):
@@ -167,10 +168,25 @@ def run_shuangxian_v2(target_date: str = None) -> dict:
         except Exception as e:
             log.error(f"  评分计算失败: {e}")
     
+    # ── 第2.6步：月度股池更新 ──────────────────────────────
+    monthly_pool_data = {}
+    if config.MONTHLY_POOL_ENABLED:
+        log.info(">>> 月度股池更新 <<<")
+        try:
+            divergence_signals = logic_result.get('divergence_signals', [])
+            monthly_pool_data = update_pool(
+                gated_candidates=gated,
+                divergence_signals=divergence_signals,
+                today_str=target_date,
+            )
+            log.info(f"  月度股池: {len(monthly_pool_data)}只")
+        except Exception as e:
+            log.error(f"  月度股池更新失败: {e}")
+    
     # ── 第三步：生成报告 ──────────────────────────────
     log.info(">>> 生成报告 <<<")
     try:
-        report_path = generate_daily_report(logic_result, flow_result, temperature=temperature)
+        report_path = generate_daily_report(logic_result, flow_result, temperature=temperature, monthly_pool_data=monthly_pool_data)
         log.info(f"  报告已生成: {report_path}")
     except Exception as e:
         log.error(f"  报告生成失败: {e}")
@@ -178,7 +194,7 @@ def run_shuangxian_v2(target_date: str = None) -> dict:
     
     # ── 第四步：推送 ──────────────────────────────────
     try:
-        title, content = generate_push_content(logic_result, flow_result, temperature=temperature)
+        title, content = generate_push_content(logic_result, flow_result, temperature=temperature, monthly_pool_data=monthly_pool_data)
         push_report(report_path=report_path, title=title, content=content)
     except Exception as e:
         log.error(f"  推送失败: {e}")
@@ -196,6 +212,7 @@ def run_shuangxian_v2(target_date: str = None) -> dict:
         'logic_result': logic_result,
         'flow_result': flow_result,
         'temperature': temperature,
+        'monthly_pool_data': monthly_pool_data,
     }
 
 
