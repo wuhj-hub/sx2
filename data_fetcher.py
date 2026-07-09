@@ -731,20 +731,19 @@ def _fallback_datacenter_web(report_name: str, sort_col: str = 'NET_INFLOW_AMT',
 # ── Sina板块资金流（主源） ────────────────────────────
 
 def get_sector_fund_flow(indicator: str = "今日") -> pd.DataFrame:
-    """板块资金流排名，Sina为主源"""
-    # 先试Sina
+    """板块资金流排名，Sina为主源（仅行业板块，概念板块单独获取）"""
+    # 先试Sina - 只获取行业板块(fenlei=0)
     results = []
-    for fenlei in ['0', '1']:  # 0=行业, 1=概念
-        url = (f"https://vip.stock.finance.sina.com.cn/quotes_service/api/json_v2.php/"
-               f"MoneyFlow.ssl_bkzj_bk?page=1&num=100&sort=netamount&asc=0&fenlei={fenlei}")
-        raw = _sina_request(url)
-        if raw:
-            try:
-                data = json.loads(raw)
-                if data:
-                    results.extend(data)
-            except Exception:
-                pass
+    url = (f"https://vip.stock.finance.sina.com.cn/quotes_service/api/json_v2.php/"
+           f"MoneyFlow.ssl_bkzj_bk?page=1&num=100&sort=netamount&asc=0&fenlei=0")
+    raw = _sina_request(url)
+    if raw:
+        try:
+            data = json.loads(raw)
+            if data:
+                results.extend(data)
+        except Exception:
+            pass
     
     if results:
         rows = []
@@ -762,7 +761,7 @@ def get_sector_fund_flow(indicator: str = "今日") -> pd.DataFrame:
                 '换手率': turnover,
             })
         df = pd.DataFrame(rows).sort_values('主力净流入-净额', ascending=False).reset_index(drop=True)
-        log.info(f"  Sina板块资金流: {len(df)}个板块")
+        log.info(f"  Sina行业板块资金流: {len(df)}个板块")
         return df
     
     # 降级到push2

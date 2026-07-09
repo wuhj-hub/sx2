@@ -749,19 +749,17 @@ def generate_push_content(logic_result: dict, flow_result: dict, temperature: di
     if hot:
         # 检查是否有 d3/d5/d10 多周期数据
         if hot[0].get('d3') is not None:
-            lines.append("**📊 板块资金全景 TOP5：**")
+            lines.append("**📊 行业板块资金全景 TOP5：**")
             for s in hot:
                 lines.append(f"  {s['name']}: 今日{s['net_flow']:+.2f}亿 3D:{s.get('d3',0):+.2f}亿 5D:{s.get('d5',0):+.2f}亿 10D:{s.get('d10',0):+.2f}亿 {s.get('direction', '')}")
         else:
-            lines.append(f"**板块资金**: 热门: {', '.join([s['name'] + f'({s['net_flow']:+.1f}亿)' for s in hot])}")
+            lines.append(f"**行业热门**: {', '.join([s['name'] + f'({s['net_flow']:+.1f}亿)' for s in hot])}")
         lines.append("")
     
     # ── 概念板块资金流摘要（v2.2新增）──
     concept_hot = sector_flow.get('concept_hot', [])[:5]
     if config.CONCEPT_ENABLED and concept_hot:
-        lines.append("**🔬 热门概念 TOP5：**")
-        for s in concept_hot:
-            lines.append(f"  [概念]{s['name']}: 净流入{s['net_flow']:+.2f}亿 涨跌{s['pct']:.2f}%")
+        lines.append(f"**概念热门**: {', '.join([s['name'] + f'({s['net_flow']:+.1f}亿)' for s in concept_hot[:3]])}")
         lines.append("")
     
     # 底背离摘要
