@@ -232,7 +232,7 @@ def generate_daily_report(logic_result: dict, flow_result: dict, temperature: di
         concept_hdr = " | 概念" if has_concept else ""
         score_hdr = " | 综合评分" if has_scoring else ""
         lines.append(f"| 代码 | 名称 | 行业{concept_hdr} | 信号类型 | 现价 | 涨跌幅% | 行业牛市占比 | 共振分 | 沉淀率 | 筹码 | 资金验证{score_hdr} |")
-        lines.append(f"|------|------|------{'+------' if has_concept else ''} |---------|------|--------|------------|--------|--------|------|----------{'+------' if has_scoring else ''} |")
+        lines.append(f"|------|------|------{'|------' if has_concept else ''} |---------|------|--------|------------|--------|--------|------|----------{'|------' if has_scoring else ''} |")
         for c in candidates:
             st_desc = sig_desc.get(c.get('signal_type', ''), c.get('signal_type', ''))
             code = c.get('code', '')
@@ -448,7 +448,7 @@ def generate_daily_report(logic_result: dict, flow_result: dict, temperature: di
         concept_hdr = " | 概念" if has_concept else ""
         score_hdr = " | 综合评分" if has_scoring else ""
         lines.append(f"| 代码 | 名称 | 行业{concept_hdr} | 信号 | 现价 | 涨跌幅% | 行业牛市占比 | 板块净流入 | 共振分 | 沉淀率 | 筹码 | 资金验证{score_hdr} |")
-        lines.append(f"|------|------|------{'+------' if has_concept else ''} |-----|------|--------|------------|----------|--------|--------|------|----------{'+------' if has_scoring else ''} |")
+        lines.append(f"|------|------|------{'|------' if has_concept else ''} |-----|------|--------|------------|----------|--------|--------|------|----------{'|------' if has_scoring else ''} |")
         sig_desc = {'limit_up': '涨停', 'new_high_vol': '放量新高', 'new_high': '半年新高'}
         for c in gated:
             st_desc = sig_desc.get(c.get('signal_type', ''), c.get('signal_type', ''))
