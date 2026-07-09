@@ -1178,24 +1178,56 @@ def get_stock_fund_flow_periods(stock_code: str, periods: list = None) -> dict:
         # 判断市场
         if stock_code.startswith('6'):
             market = 'sh'
+            prefix = 'sh'
         else:
             market = 'sz'
+            prefix = 'sz'
         
-        # 使用akshare获取个股历史资金流
-        df_hist = ak.stock_individual_fund_flow(stock=stock_code, market=market)
-        if df_hist is None or df_hist.empty:
+        flows = None  # 标记是否获取成功
+        
+        # ── 数据源1：akshare ──
+        try:
+            df_hist = ak.stock_individual_fund_flow(stock=stock_code, market=market)
+            if df_hist is not None and not df_hist.empty:
+                cols = df_hist.columns.tolist()
+                flow_col = next((c for c in cols if '主力净流入' in c and '净额' in c), None)
+                if flow_col is None:
+                    flow_col = next((c for c in cols if '主力净流入' in c), None)
+                if flow_col is not None:
+                    df_hist = df_hist.tail(25)
+                    flows = df_hist[flow_col].astype(float).values
+                    log.info(f"  [多周期] {stock_code} akshare获取成功, {len(flows)}天数据")
+        except Exception as e:
+            log.warning(f"  [多周期] {stock_code} akshare失败: {e}")
+        
+        # ── 数据源2：Sina资金流API降级 ──
+        if flows is None or len(flows) == 0:
+            try:
+                symbol_sina = f"{prefix}{stock_code}"
+                url = (f"https://vip.stock.finance.sina.com.cn/quotes_service/api/json_v2.php/"
+                       f"MoneyFlow.ssl_qsfx_lscjjs?&page=1&num=25&sort=opendate&asc=1&fenlei=1&symbol={symbol_sina}")
+                raw = _sina_request(url, timeout=10)
+                if raw:
+                    json_str = raw.strip()
+                    if json_str.startswith('('):
+                        json_str = json_str[1:]
+                    if json_str.endswith(')'):
+                        json_str = json_str[:-1]
+                    import json
+                    records = json.loads(json_str)
+                    if records and len(records) > 0:
+                        daily_flows = []
+                        for rec in records:
+                            r0 = float(rec.get('r0_net', 0) or 0)
+                            r1 = float(rec.get('r1_net', 0) or 0)
+                            daily_flows.append(r0 + r1)
+                        flows = np.array(daily_flows)
+                        log.info(f"  [多周期] {stock_code} Sina降级获取成功, {len(flows)}天数据")
+            except Exception as e:
+                log.warning(f"  [多周期] {stock_code} Sina降级也失败: {e}")
+        
+        if flows is None or len(flows) == 0:
             return result
-        
-        # 找到主力净流入列
-        cols = df_hist.columns.tolist()
-        flow_col = next((c for c in cols if '主力净流入' in c and '净额' in c), None)
-        if flow_col is None:
-            flow_col = next((c for c in cols if '主力净流入' in c), None)
-        if flow_col is None:
-            return result
-        
-        df_hist = df_hist.tail(25)  # 取最近25天足够
-        flows = df_hist[flow_col].astype(float).values
         
         # 计算各周期累计
         for d in periods:
@@ -1206,7 +1238,6 @@ def get_stock_fund_flow_periods(stock_code: str, periods: list = None) -> dict:
         # 沉淀率 = 3日主力净流入 / 3日总成交额
         # 从K线数据获取成交额
         if config.SEDIMENTATION_ENABLED and len(flows) >= 3:
-            prefix = 'sh' if stock_code.startswith('6') else 'sz'
             symbol = f"{prefix}{stock_code}"
             kline = get_sina_kline(symbol, scale=240, datalen=10)
             if not kline.empty and len(kline) >= 3:
