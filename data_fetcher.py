@@ -1200,12 +1200,13 @@ def get_stock_fund_flow_periods(stock_code: str, periods: list = None) -> dict:
         except Exception as e:
             log.warning(f"  [多周期] {stock_code} akshare失败: {e}")
         
-        # ── 数据源2：Sina资金流API降级 ──
+        # ── 数据源2：Sina资金流API降级 ─
         if flows is None or len(flows) == 0:
             try:
                 symbol_sina = f"{prefix}{stock_code}"
+                # Sina个股资金流入趋势API: netamount=总净流入
                 url = (f"https://vip.stock.finance.sina.com.cn/quotes_service/api/json_v2.php/"
-                       f"MoneyFlow.ssl_qsfx_lscjjs?&page=1&num=25&sort=opendate&asc=1&fenlei=1&symbol={symbol_sina}")
+                       f"MoneyFlow.ssl_qsfx_zjlrqs?page=1&num=30&sort=opendate&asc=0&daima={symbol_sina}")
                 raw = _sina_request(url, timeout=10)
                 if raw:
                     json_str = raw.strip()
@@ -1216,12 +1217,14 @@ def get_stock_fund_flow_periods(stock_code: str, periods: list = None) -> dict:
                     import json
                     records = json.loads(json_str)
                     if records and len(records) > 0:
+                        # asc=0 返回最新在前，取最近25条
+                        recent = records[:25]
                         daily_flows = []
-                        for rec in records:
-                            r0 = float(rec.get('r0_net', 0) or 0)
-                            r1 = float(rec.get('r1_net', 0) or 0)
-                            daily_flows.append(r0 + r1)
-                        flows = np.array(daily_flows)
+                        for rec in recent:
+                            net = float(rec.get('netamount', 0) or 0)
+                            daily_flows.append(net)
+                        # 反转为日期升序（旧→新），与原akshare格式一致
+                        flows = np.array(daily_flows[::-1])
                         log.info(f"  [多周期] {stock_code} Sina降级获取成功, {len(flows)}天数据")
             except Exception as e:
                 log.warning(f"  [多周期] {stock_code} Sina降级也失败: {e}")

@@ -52,38 +52,37 @@ def _low_price_count_text(items: list, threshold: float = None) -> str:
     return ""
 
 
-def _generate_monthly_pool_section(monthly_pool_data: dict = None) -> list:
+def _generate_pool_section(pool_data: dict, pool_label: str, signal_name: str) -> list:
     """
-    生成月度股池段落（Markdown格式），按count降序排列
+    通用月度股池段落生成（Markdown格式）
     
     参数:
-        monthly_pool_data: {code: {stock_record_dict}, ...} 或 None
+        pool_data: {code: {stock_record_dict}, ...}
+        pool_label: "共振股池" / "底背离股池"
+        signal_name: "共振" / "低吸"
     
     返回:
         lines: Markdown行列表
     """
     lines = []
     
-    if not config.MONTHLY_POOL_ENABLED:
-        return lines
+    if pool_data is None:
+        pool_data = {}
     
-    if monthly_pool_data is None:
-        monthly_pool_data = {}
-    
-    # 按count降序排列
     sorted_pool = sorted(
-        monthly_pool_data.values(),
+        pool_data.values(),
         key=lambda x: (x.get('count', 0), x.get('last_seen', '')),
         reverse=True
     )
     
-    year_month = datetime.now().strftime('%Y-%m')
     total = len(sorted_pool)
-    both_signals = sum(1 for r in sorted_pool if len(r.get('signals', [])) >= 2)
     
-    lines.append(f"## 📋 本月股池（{year_month}）")
+    if pool_label == "底背离股池":
+        lines.append(f"## 📉 本月{pool_label}（{datetime.now().strftime('%Y-%m')}）")
+    else:
+        lines.append(f"## 📋 本月{pool_label}（{datetime.now().strftime('%Y-%m')}）")
     lines.append("")
-    lines.append(f"> 累积本月所有共振+低吸信号中股价≤{config.MAX_PRICE:.0f}元的股票，共 **{total}只**（双信号{both_signals}只）")
+    lines.append(f"> 累积本月{signal_name}信号中股价≤{config.MAX_PRICE:.0f}元的股票，共 **{total}只**")
     lines.append("")
     
     if sorted_pool:
@@ -91,7 +90,6 @@ def _generate_monthly_pool_section(monthly_pool_data: dict = None) -> list:
         lines.append("|------|------|------|------|---------|---------|---------|---------|")
         for i, r in enumerate(sorted_pool):
             signals_str = '+'.join(r.get('signals', []))
-            # 双信号加粗标记
             count_str = f"**{r.get('count', 0)}**" if r.get('count', 0) >= 2 else str(r.get('count', 0))
             lines.append(
                 f"| {i+1} "
@@ -105,8 +103,39 @@ def _generate_monthly_pool_section(monthly_pool_data: dict = None) -> list:
             )
         lines.append("")
     else:
-        lines.append("*本月暂无股池记录*")
+        lines.append(f"*本月暂无{pool_label}记录*")
         lines.append("")
+    
+    return lines
+
+
+def _generate_monthly_pool_section(monthly_pool_data: dict = None) -> list:
+    """
+    生成月度股池段落（双股池：共振+底背离）
+    
+    参数:
+        monthly_pool_data: {"resonance": {...}, "divergence": {...}} 或 None
+    
+    返回:
+        lines: Markdown行列表
+    """
+    if not config.MONTHLY_POOL_ENABLED:
+        return []
+    
+    if monthly_pool_data is None:
+        monthly_pool_data = {}
+    
+    lines = []
+    
+    # 共振股池
+    res_pool = monthly_pool_data.get('resonance', {})
+    res_lines = _generate_pool_section(res_pool, "共振股池", "共振")
+    lines.extend(res_lines)
+    
+    # 底背离股池
+    div_pool = monthly_pool_data.get('divergence', {})
+    div_lines = _generate_pool_section(div_pool, "底背离股池", "低吸")
+    lines.extend(div_lines)
     
     lines.append("---")
     lines.append("")
@@ -709,24 +738,29 @@ def generate_push_content(logic_result: dict, flow_result: dict, temperature: di
             lines.append(f"  {sub_str}")
         lines.append("")
     
-    # ── 月度股池摘要 ──
+    # ── 月度股池摘要（共振+底背离分离）──
     if config.MONTHLY_POOL_ENABLED and monthly_pool_data:
-        sorted_pool = sorted(
-            monthly_pool_data.values(),
-            key=lambda x: (x.get('count', 0), x.get('last_seen', '')),
-            reverse=True
-        )
-        total = len(sorted_pool)
-        both_signals = sum(1 for r in sorted_pool if len(r.get('signals', [])) >= 2)
         year_month = datetime.now().strftime('%Y-%m')
-        lines.append(f"**📋 本月股池（{year_month}）**: {total}只≤{config.MAX_PRICE:.0f}元（双信号{both_signals}只）")
-        if sorted_pool:
-            top5 = sorted_pool[:5]
-            for r in top5:
-                signals_str = '+'.join(r.get('signals', []))
+        
+        # 共振股池
+        res_pool = monthly_pool_data.get('resonance', {})
+        if res_pool:
+            sorted_res = sorted(res_pool.values(), key=lambda x: (x.get('count', 0), x.get('last_seen', '')), reverse=True)
+            lines.append(f"**📋 本月共振股池（{year_month}）**: {len(sorted_res)}只≤{config.MAX_PRICE:.0f}元")
+            for r in sorted_res[:5]:
                 count_str = f"×{r.get('count', 0)}"
-                lines.append(f"  - {r.get('name', r.get('code', ''))}({r.get('code', '')}) | {r.get('industry', '')} | {signals_str}{count_str} | {r.get('first_seen', '')}~{r.get('last_seen', '')}")
-        lines.append("")
+                lines.append(f"  - {r.get('name', r.get('code', ''))}({r.get('code', '')}) | {r.get('industry', '')} | {count_str} | {r.get('first_seen', '')}~{r.get('last_seen', '')}")
+            lines.append("")
+        
+        # 底背离股池
+        div_pool = monthly_pool_data.get('divergence', {})
+        if div_pool:
+            sorted_div = sorted(div_pool.values(), key=lambda x: (x.get('count', 0), x.get('last_seen', '')), reverse=True)
+            lines.append(f"**📉 本月底背离股池（{year_month}）**: {len(sorted_div)}只≤{config.MAX_PRICE:.0f}元")
+            for r in sorted_div[:5]:
+                count_str = f"×{r.get('count', 0)}"
+                lines.append(f"  - {r.get('name', r.get('code', ''))}({r.get('code', '')}) | {r.get('industry', '')} | {count_str} | {r.get('first_seen', '')}~{r.get('last_seen', '')}")
+            lines.append("")
     
     # 逻辑链摘要
     bull_count = logic_result.get('monthly_bull_count', 0)
@@ -764,7 +798,7 @@ def generate_push_content(logic_result: dict, flow_result: dict, temperature: di
     
     # 底背离摘要
     if divergence_signals:
-        lines.append(f"**🔻 底背离买点**: {len(divergence_signals)}只月线牛市股出现日线MACD底背离（≤{config.MAX_PRICE}元）")
+        lines.append(f"**🔻 底背离买点**: {len(divergence_signals)}只月线牛市股出现日线MACD底背离{low_tag}")
         for d in divergence_signals[:5]:
             lines.append(f"  - {d.get('name', d.get('code', ''))} | {d.get('industry', '')} | ¥{d.get('close', 0):.2f} | 回升{d.get('recovery_pct', 0):.1f}% | 间距{d.get('gap_days', 0)}天")
         lines.append("")

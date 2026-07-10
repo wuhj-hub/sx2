@@ -174,12 +174,15 @@ def run_shuangxian_v2(target_date: str = None) -> dict:
         log.info(">>> 月度股池更新 <<<")
         try:
             divergence_signals = logic_result.get('divergence_signals', [])
-            monthly_pool_data = update_pool(
+            monthly_pool_result = update_pool(
                 gated_candidates=gated,
                 divergence_signals=divergence_signals,
                 today_str=target_date,
             )
-            log.info(f"  月度股池: {len(monthly_pool_data)}只")
+            monthly_pool_data = monthly_pool_result  # {"resonance": {...}, "divergence": {...}}
+            res_count = len(monthly_pool_data.get('resonance', {}))
+            div_count = len(monthly_pool_data.get('divergence', {}))
+            log.info(f"  月度股池: 共振{res_count}只, 底背离{div_count}只")
         except Exception as e:
             log.error(f"  月度股池更新失败: {e}")
     
