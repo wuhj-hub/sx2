@@ -7,6 +7,8 @@
 3. 日线MACD底背离买点（新增）：月线牛市股中出现底背离 → 趋势回踩买入信号
 4. 领涨行业优先排序（非硬过滤）
 5. 混合止损：MA20保底 + 8%移动止盈 + 月线转熊退出
+
+v2.1 — 并行化改造：3处串行K线拉取循环改为 ThreadPoolExecutor 并发执行
 """
 
 import logging
@@ -16,11 +18,16 @@ import numpy as np
 import pandas as pd
 from datetime import datetime
 from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import threading
 
 import data_fetcher as df
 import config
 
 log = logging.getLogger("shuangxian.logic")
+
+# ── 并行配置 ──────────────────────────────────────────
+MAX_WORKERS = 6  # 4~8 之间，避免 Sina API 限频
 
 
 # ════════════════════════════════════════════════════════
@@ -139,6 +146,33 @@ def _ema(data, period):
 
 
 # ════════════════════════════════════════════════════════
+#  月线扫描 — 单只股票工作函数（供 ThreadPoolExecutor 调用）
+# ════════════════════════════════════════════════════════
+
+def _scan_one_monthly(s: dict) -> dict | None:
+    """
+    扫描单只股票的月线牛市状态（线程安全，无共享写操作）。
+    返回: {'symbol': str, 'daily': DataFrame, 'bull_status': dict} 或 None
+    """
+    try:
+        daily = df.get_kline(s['symbol'], scale=240)  # 默认600根(~2.5年)
+        if daily.empty or len(daily) < 130:
+            return None
+        
+        monthly = compute_monthly_bars(daily)
+        bull_status = is_monthly_bull(monthly)
+        
+        return {
+            'symbol': s['symbol'],
+            'daily': daily,
+            'bull_status': bull_status,
+        }
+    except Exception as e:
+        log.debug(f"  {s['symbol']} 月线扫描失败: {e}")
+        return None
+
+
+# ════════════════════════════════════════════════════════
 #  日线突破信号
 # ════════════════════════════════════════════════════════
 
@@ -203,6 +237,50 @@ def detect_daily_signals(daily_df: pd.DataFrame, symbol: str) -> list:
                     })
     
     return signals
+
+
+# ════════════════════════════════════════════════════════
+#  日线突破扫描 — 单只股票工作函数
+# ════════════════════════════════════════════════════════
+
+def _scan_one_daily_signal(s: dict, daily_data_cache: dict,
+                           target_date: str, industry_map: dict,
+                           current_industry_bull: dict,
+                           cache_lock: threading.Lock) -> list:
+    """
+    扫描单只月线牛市股的日线突破信号（线程安全）。
+    daily_data_cache 只读访问无需锁；写时加锁。
+    返回: [signal_dict, ...]  目标日期的信号列表
+    """
+    try:
+        # 优先复用缓存（读操作，无需锁——Python dict 读是线程安全的）
+        if s['symbol'] in daily_data_cache:
+            daily = daily_data_cache[s['symbol']]
+        else:
+            daily = df.get_kline(s['symbol'], scale=240, datalen=300)
+            # 写入缓存供后续使用
+            with cache_lock:
+                daily_data_cache[s['symbol']] = daily
+        
+        if daily.empty or len(daily) < 130:
+            return []
+        
+        signals = detect_daily_signals(daily, s['symbol'])
+        # 过滤出目标日期的信号
+        result = []
+        for sig in signals:
+            if sig['date'] == target_date:
+                sig['code'] = s['code']
+                sig['name'] = s.get('name', '')
+                sig['industry'] = industry_map.get(
+                    s['symbol'], industry_map.get(s['code'], '未知'))
+                sig['ind_bull_ratio'] = current_industry_bull.get(
+                    sig['industry'], 0)
+                result.append(sig)
+        return result
+    except Exception as e:
+        log.debug(f"  {s['symbol']} 日线扫描失败: {e}")
+        return []
 
 
 # ════════════════════════════════════════════════════════
@@ -318,11 +396,48 @@ def detect_daily_divergence(daily_df: pd.DataFrame, symbol: str) -> dict:
     return None
 
 
+# ════════════════════════════════════════════════════════
+#  底背离扫描 — 单只股票工作函数
+# ════════════════════════════════════════════════════════
+
+def _scan_one_divergence(s: dict, daily_data_cache: dict,
+                         industry_map: dict, name_map: dict,
+                         cache_lock: threading.Lock) -> dict | None:
+    """
+    扫描单只月线牛市股的底背离信号（线程安全）。
+    返回: 信号dict 或 None
+    """
+    try:
+        if s['symbol'] in daily_data_cache:
+            daily = daily_data_cache[s['symbol']]
+        else:
+            needed = config.DIVERGENCE_LOOKBACK + 60
+            daily = df.get_kline(s['symbol'], scale=240,
+                                 datalen=max(needed, 200))
+            with cache_lock:
+                daily_data_cache[s['symbol']] = daily
+        
+        if daily.empty or len(daily) < 120:
+            return None
+        
+        div = detect_daily_divergence(daily, s['symbol'])
+        if div:
+            div['code'] = s['code']
+            div['name'] = s.get('name', '') or name_map.get(s['symbol'], '')
+            div['industry'] = industry_map.get(
+                s['symbol'], industry_map.get(s['code'], '未知'))
+            return div
+        return None
+    except Exception as e:
+        log.debug(f"  {s['symbol']} 底背离检测失败: {e}")
+        return None
+
+
 def scan_divergence_signals(stock_pool: list, bull_stocks: list,
                             daily_data_cache: dict, industry_map: dict,
                             target_date: str) -> list:
     """
-    扫描底背离信号：在月线牛市股票中检测日线MACD底背离
+    扫描底背离信号：在月线牛市股票中检测日线MACD底背离（并行版）
     
     底背离 = 价格创新低但MACD不创新低，下跌动能衰竭。
     月线牛市 + 日线底背离 = 趋势回踩买点（高置信度）。
@@ -334,36 +449,27 @@ def scan_divergence_signals(stock_pool: list, bull_stocks: list,
         return []
     
     log.info(f"  底背离检测: 扫描 {len(bull_stocks)} 只月线牛市股...")
-    divergence_signals = []
-    name_map = {s['symbol']: s.get('name', '') for s in stock_pool}
-    scan_count = 0
     
-    for s in stock_pool:
-        if s['symbol'] not in bull_stocks:
-            continue
-        
-        scan_count += 1
-        try:
-            # 优先用缓存（月线扫描时已拉取），否则拉取数据
-            if s['symbol'] in daily_data_cache:
-                daily = daily_data_cache[s['symbol']]
-            else:
-                # 底背离检测需要足够长的数据（MACD预热+回望窗口）
-                needed = config.DIVERGENCE_LOOKBACK + 60  # ~150根
-                daily = df.get_kline(s['symbol'], scale=240, datalen=max(needed, 200))
-            
-            if daily.empty or len(daily) < 120:
-                continue
-            
-            div = detect_daily_divergence(daily, s['symbol'])
-            if div:
-                div['code'] = s['code']
-                div['name'] = s.get('name', '') or name_map.get(s['symbol'], '')
-                div['industry'] = industry_map.get(s['symbol'],
-                                        industry_map.get(s['code'], '未知'))
-                divergence_signals.append(div)
-        except Exception as e:
-            log.debug(f"  {s['symbol']} 底背离检测失败: {e}")
+    name_map = {s['symbol']: s.get('name', '') for s in stock_pool}
+    
+    # 筛选出月线牛市股
+    bull_items = [s for s in stock_pool if s['symbol'] in bull_stocks]
+    scan_count = len(bull_items)
+    
+    divergence_signals = []
+    cache_lock = threading.Lock()
+    
+    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+        futures = {
+            executor.submit(
+                _scan_one_divergence, s, daily_data_cache,
+                industry_map, name_map, cache_lock
+            ): s for s in bull_items
+        }
+        for future in as_completed(futures):
+            result = future.result()
+            if result:
+                divergence_signals.append(result)
     
     log.info(f"  底背离扫描: {scan_count}只, 发现信号: {len(divergence_signals)}个")
     return divergence_signals
@@ -411,7 +517,7 @@ def compute_industry_bull_status(monthly_bull_map: dict, industry_map: dict) -> 
 
 def run_logic_scan(target_date: str = None) -> dict:
     """
-    逻辑链弦每日扫描
+    逻辑链弦每日扫描（并行版 v2.1）
     target_date: '2026-06-18'，默认今天
     
     返回: {
@@ -476,7 +582,7 @@ def run_logic_scan(target_date: str = None) -> dict:
     else:
         monthly_bull = {}
     
-    # 3. 逐只扫描（增量更新：只扫描缓存中缺失或过时的）
+    # 3. 逐只扫描（增量更新：只扫描缓存中缺失或过时的）—— 并行版
     need_update = []
     pool_codes = set(s['code'] for s in stock_pool)
     
@@ -487,33 +593,32 @@ def run_logic_scan(target_date: str = None) -> dict:
     
     if need_update:
         log.info(f"  需更新月线牛市: {len(need_update)}只")
-        # 日线数据缓存：月线扫描拉过的K线存起来，日线信号扫描直接复用，避免重复请求
+        # 日线数据缓存：月线扫描拉过的K线存起来，日线信号扫描直接复用
         daily_data_cache = {}
-        # 分批更新，每批50只
+        cache_lock = threading.Lock()
+        
+        # 分批更新，每批内并行执行
         batch_size = 50
         for i in range(0, len(need_update), batch_size):
-            batch = need_update[i:i+batch_size]
-            for s in batch:
-                try:
-                    daily = df.get_kline(s['symbol'], scale=240)  # 默认600根(~2.5年)
-                    if daily.empty or len(daily) < 130:
-                        continue
-                    
-                    daily_data_cache[s['symbol']] = daily  # 缓存供日线扫描复用
-                    
-                    # 月线牛市判定
-                    monthly = compute_monthly_bars(daily)
-                    bull_status = is_monthly_bull(monthly)
-                    
-                    # 存当前月状态（只需当月判定结果用于日线扫描）
-                    if s['symbol'] not in monthly_bull:
-                        monthly_bull[s['symbol']] = {}
-                    monthly_bull[s['symbol']][mk] = bull_status
-                    
-                except Exception as e:
-                    log.debug(f"  {s['symbol']} 月线扫描失败: {e}")
+            batch = need_update[i:i + batch_size]
             
-            log.info(f"  月线扫描进度: {min(i+batch_size, len(need_update))}/{len(need_update)}")
+            with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+                futures = {executor.submit(_scan_one_monthly, s): s
+                           for s in batch}
+                for future in as_completed(futures):
+                    result = future.result()
+                    if result is None:
+                        continue
+                    sym = result['symbol']
+                    # 线程安全写入共享数据结构
+                    with cache_lock:
+                        daily_data_cache[sym] = result['daily']
+                        if sym not in monthly_bull:
+                            monthly_bull[sym] = {}
+                        monthly_bull[sym][mk] = result['bull_status']
+            
+            done = min(i + batch_size, len(need_update))
+            log.info(f"  月线扫描进度: {done}/{len(need_update)}")
         
         # 保存缓存
         with open(monthly_bull_path, 'w') as f:
@@ -540,39 +645,30 @@ def run_logic_scan(target_date: str = None) -> dict:
     )
     log.info(f"  领涨行业 TOP5: {[(ind, f'{r:.0%}') for ind, r in leading_industries[:5]]}")
     
-    # 6. 日线突破信号（只扫描月线牛市的股票）
+    # 6. 日线突破信号（只扫描月线牛市的股票）—— 并行版
     today_signals = []
     scan_count = 0
     
     # 名称映射
     name_map = {s['symbol']: s.get('name', '') for s in stock_pool}
     
-    for s in stock_pool:
-        if s['symbol'] not in bull_stocks:
-            continue
-        
-        scan_count += 1
-        try:
-            # 优先复用月线扫描缓存，否则用datalen=300拉近期数据(日线信号只需~130天)
-            if s['symbol'] in daily_data_cache:
-                daily = daily_data_cache[s['symbol']]
-            else:
-                daily = df.get_kline(s['symbol'], scale=240, datalen=300)
-            if daily.empty or len(daily) < 130:
-                continue
-            
-            # 只取最后一天的信号
-            signals = detect_daily_signals(daily, s['symbol'])
-            # 过滤出目标日期的信号
-            for sig in signals:
-                if sig['date'] == target_date:
-                    sig['code'] = s['code']
-                    sig['name'] = s.get('name', '') or name_map.get(s['symbol'], '')
-                    sig['industry'] = industry_map.get(s['symbol'], industry_map.get(s['code'], '未知'))
-                    sig['ind_bull_ratio'] = current_industry_bull.get(sig['industry'], 0)
-                    today_signals.append(sig)
-        except Exception as e:
-            log.debug(f"  {s['symbol']} 日线扫描失败: {e}")
+    # 筛选出月线牛市股
+    bull_items = [s for s in stock_pool if s['symbol'] in bull_stocks]
+    scan_count = len(bull_items)
+    
+    cache_lock = threading.Lock()
+    
+    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+        futures = {
+            executor.submit(
+                _scan_one_daily_signal, s, daily_data_cache,
+                target_date, industry_map, current_industry_bull, cache_lock
+            ): s for s in bull_items
+        }
+        for future in as_completed(futures):
+            sigs = future.result()
+            if sigs:
+                today_signals.extend(sigs)
     
     log.info(f"  日线扫描: {scan_count}只月线牛市股, 今日信号: {len(today_signals)}个")
     
