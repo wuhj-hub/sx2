@@ -798,6 +798,7 @@ def generate_push_content(logic_result: dict, flow_result: dict, temperature: di
     
     # 底背离摘要
     if divergence_signals:
+        low_tag = _low_price_count_text(divergence_signals)
         lines.append(f"**🔻 底背离买点**: {len(divergence_signals)}只月线牛市股出现日线MACD底背离{low_tag}")
         for d in divergence_signals[:5]:
             lines.append(f"  - {d.get('name', d.get('code', ''))} | {d.get('industry', '')} | ¥{d.get('close', 0):.2f} | 回升{d.get('recovery_pct', 0):.1f}% | 间距{d.get('gap_days', 0)}天")
@@ -891,6 +892,4 @@ def generate_push_content(logic_result: dict, flow_result: dict, temperature: di
             lines.append("  可关注沉淀率高且资金持续流入的标的")
             lines.append("")
         lines.append("今日无共振信号，无底背离信号，不操作。")
-    
-    content = '\n'.join(lines)
-    return title, content
+  
