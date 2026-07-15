@@ -893,3 +893,5 @@ def generate_push_content(logic_result: dict, flow_result: dict, temperature: di
             lines.append("")
         lines.append("今日无共振信号，无底背离信号，不操作。")
   
+    content = '\n'.join(lines)
+    return title, content
