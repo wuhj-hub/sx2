@@ -30,6 +30,20 @@ jobs:
           pip install --upgrade pip
           pip install -r requirements.txt
 
+      - name: 获取日期
+        id: date
+        run: echo "report_date=$(date +'%Y%m%d')" >> $GITHUB_OUTPUT
+
+      - name: 恢复缓存（行业映射+月度股池）
+        uses: actions/cache@v4
+        with:
+          path: |
+            cache/
+            monthly_pool/
+          key: shuangxian-cache-${{ steps.date.outputs.report_date }}
+          restore-keys: |
+            shuangxian-cache-
+
       - name: 运行双弦系统v2.0
         env:
           PUSH_ENABLED: 'true'
@@ -46,10 +60,6 @@ jobs:
           fi
           python main.py $ARGS
 
-      - name: 获取日期
-        id: date
-        run: echo "report_date=$(date +'%Y%m%d')" >> $GITHUB_OUTPUT
-
       - name: 上传报告
         uses: actions/upload-artifact@v4
         if: always()
@@ -61,10 +71,12 @@ jobs:
             monthly_pool/
           retention-days: 30
 
-      - name: 缓存月度股池数据
+      - name: 保存缓存（行业映射+月度股池）
         uses: actions/cache@v4
+        if: always()
         with:
-          path: monthly_pool/
-          key: monthly-pool-${{ steps.date.outputs.report_date }}
-          restore-keys: |
-            monthly-pool-
+          path: |
+            cache/
+            monthly_pool/
+          key: shuangxian-cache-${{ steps.date.outputs.report_date }}
+          fail-on-cache-miss: false
