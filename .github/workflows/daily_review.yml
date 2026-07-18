@@ -60,6 +60,23 @@ jobs:
           fi
           python main.py $ARGS
 
+      - name: 上传报告至IMA知识库
+        env:
+          IMA_OPENAPI_CLIENTID: ${{ secrets.IMA_OPENAPI_CLIENTID }}
+          IMA_OPENAPI_APIKEY: ${{ secrets.IMA_OPENAPI_APIKEY }}
+          KB_ID: "zw56pWsoAd18wp9A_2-_vFFAPbG51UZsuaGyvynm66g="
+        run: |
+          REPORT_FILE=$(ls -t reports/shuangxian_v2_*.md 2>/dev/null | head -1)
+          if [ -n "$REPORT_FILE" ]; then
+            echo "上传报告: $REPORT_FILE"
+            python3 upload_kb.py \
+              --file-path "$REPORT_FILE" \
+              --knowledge-base-id "$KB_ID" \
+              --folder-id "folder_7484244062400511" || echo "IMA上传（非致命）"
+          else
+            echo "未找到报告文件，跳过IMA上传"
+          fi
+
       - name: 上传报告
         uses: actions/upload-artifact@v4
         if: always()
