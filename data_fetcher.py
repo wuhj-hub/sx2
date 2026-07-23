@@ -270,35 +270,61 @@ def get_sina_realtime_batch(codes: list) -> dict:
 
 def get_stock_pool() -> list:
     """
-    获取股票池：沪深300 + 中证500 + 中证1000
-    返回: [{'symbol': 'sh600519', 'code': '600519', 'name': '贵州茅台', 'pool': 'hs300'}, ...]
+    获取股票池：全量沪深主板（板块过滤规则）
+    替代原沪深300+中证500+中证1000组合。
+    返回: [{'symbol': 'sh600519', 'code': '600519', 'name': '贵州茅台', 'pool': 'mainboard'}, ...]
     """
     stocks = []
-    # 用akshare获取成分股
-    for idx_code, pool_name in [("000300", "hs300"), ("000905", "zz500"), ("000852", "zz1000")]:
-        try:
-            df = _retry(ak.index_stock_cons_csindex, symbol=idx_code)
-            if df is not None and not df.empty:
-                # 列名: 日期, 指数代码, 指数名称, 指数英文名称, 成分券代码, 成分券名称, ...
-                code_col = '成分券代码' if '成分券代码' in df.columns else df.columns[4]
-                name_col = '成分券名称' if '成分券名称' in df.columns else df.columns[5]
-                for _, row in df.iterrows():
-                    code = str(row[code_col]).zfill(6)
-                    name = str(row[name_col])
-                    prefix = 'sh' if code.startswith('6') else ('sz' if code.startswith(('0','3')) else 'bj')
-                    stocks.append({
-                        'symbol': f'{prefix}{code}',
-                        'code': code,
-                        'name': name,
-                        'pool': pool_name,
-                    })
-                log.info(f"  {pool_name}({idx_code}): {len(df)}只")
-        except Exception as e:
-            log.warning(f"  {pool_name}({idx_code})获取失败: {e}")
-    
-    # 去重(保留最小池的标记，hs300优先)
+    try:
+        df = _retry(ak.stock_zh_a_spot)
+        if df is not None and not df.empty:
+            # 自适应列名
+            cols = [c for c in df.columns if '代码' in str(c) or 'code' in str(c).lower()]
+            code_col = cols[0] if cols else df.columns[0]
+            name_col = df.columns[1] if len(df.columns) > 1 else None
+            for _, row in df.iterrows():
+                code = str(row[code_col]).strip().zfill(6)
+                name = str(row[name_col]).strip() if name_col else ''
+                # 板块过滤
+                if code.startswith('688') or code.startswith('300') or code.startswith('301'):
+                    continue
+                if code.startswith('8') or code.startswith('43') or code.startswith('92'):
+                    continue
+                if 'ST' in name.upper():
+                    continue
+                prefix = 'sh' if code.startswith('6') else 'sz'
+                stocks.append({
+                    'symbol': f'{prefix}{code}',
+                    'code': code,
+                    'name': name,
+                    'pool': 'mainboard',
+                })
+            log.info(f"  全量主板: {len(stocks)}只")
+    except Exception as e:
+        log.warning(f"  全量主板获取失败({e})，回退到指数成分池")
+        for idx_code, pool_name in [("000300", "hs300"), ("000905", "zz500"), ("000852", "zz1000")]:
+            try:
+                df2 = _retry(ak.index_stock_cons_csindex, symbol=idx_code)
+                if df2 is not None and not df2.empty:
+                    code_col = '成分券代码' if '成分券代码' in df2.columns else df2.columns[4]
+                    name_col = '成分券名称' if '成分券名称' in df2.columns else df2.columns[5]
+                    for _, row in df2.iterrows():
+                        code = str(row[code_col]).zfill(6)
+                        name = str(row[name_col])
+                        if code.startswith('688') or code.startswith('300') or code.startswith('301'):
+                            continue
+                        if code.startswith('8') or code.startswith('43') or code.startswith('92'):
+                            continue
+                        if 'ST' in name.upper():
+                            continue
+                        prefix = 'sh' if code.startswith('6') else ('sz' if code.startswith(('0','3')) else 'bj')
+                        stocks.append({'symbol': f'{prefix}{code}', 'code': code, 'name': name, 'pool': pool_name})
+                    log.info(f"  {pool_name}({idx_code}): {len(df2)}只")
+            except Exception as e2:
+                log.warning(f"  {pool_name} fallback 也失败: {e2}")
+    # 去重(保留高优先级)
     seen = {}
-    pool_priority = {'hs300': 0, 'zz500': 1, 'zz1000': 2}
+    pool_priority = {'mainboard': 0, 'hs300': 0, 'zz500': 1, 'zz1000': 2}
     for s in stocks:
         code = s['code']
         if code not in seen or pool_priority.get(s['pool'], 9) < pool_priority.get(seen[code]['pool'], 9):
@@ -306,8 +332,6 @@ def get_stock_pool() -> list:
     result = list(seen.values())
     log.info(f"  股票池总计: {len(result)}只(去重后)")
     return result
-
-
 def get_industry_constituents() -> dict:
     """
     获取行业板块成分股 → {行业名: [symbol1, symbol2, ...]}
