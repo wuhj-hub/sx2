@@ -717,6 +717,7 @@ def run_logic_scan(target_date: str = None) -> dict:
         'divergence_count': len(divergence_signals),
         'industry_status': current_industry_bull,
         'leading_industries': leading_industries[:10],
+        'pool_size': len(stock_pool),
     }
     
     log.info(f"  信号分布: {dict(signal_summary)}")
