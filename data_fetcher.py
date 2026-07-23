@@ -279,9 +279,16 @@ def get_stock_pool() -> list:
         df = _retry(ak.stock_zh_a_spot)
         if df is not None and not df.empty:
             # 自适应列名
-            cols = [c for c in df.columns if '代码' in str(c) or 'code' in str(c).lower()]
-            code_col = cols[0] if cols else df.columns[0]
-            name_col = df.columns[1] if len(df.columns) > 1 else None
+            # 自适应列名：尝试多种可能的列名，兜底用索引
+            code_col = name_col = None
+            for c in df.columns:
+                cs = str(c)
+                if '代码' in cs or cs.lower() in ('code','stock_code','symbol'):
+                    code_col = c
+                if '名称' in cs or cs.lower() in ('name','stock_name'):
+                    name_col = c
+            if not code_col: code_col = df.columns[0]
+            if not name_col: name_col = df.columns[1]
             for _, row in df.iterrows():
                 code = str(row[code_col]).strip().zfill(6)
                 name = str(row[name_col]).strip() if name_col else ''
