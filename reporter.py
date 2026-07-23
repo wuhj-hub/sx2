@@ -160,6 +160,7 @@ def generate_daily_report(logic_result: dict, flow_result: dict, temperature: di
     lines.append(f"# 双弦系统日报 — {date_str}")
     lines.append(f"> 生成时间: {date_str} {time_str}")
     lines.append(f"> 逻辑链弦(月线牛市+日线突破V3.0+底背离买点) × 资金流弦(七步复盘+板块全景+多周期验证+三层共振+主线军) → AND门控")
+    lines.append(f"> 扫描范围: 沪深主板 {logic_result.get('pool_size','?')} 只（剔除688/300/301/8/43/92/ST）")
     lines.append("")
     
     # ── 市场温度计 ──────────────────────────────────────
