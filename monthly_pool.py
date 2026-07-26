@@ -253,7 +253,4 @@ def format_rotation_report(year_month: str = None) -> str:
             lines.append(f"   ❌ {code} {name} ({stype})")
 
     lines.append("━" * 35)
-    return "\n".join(lines) pool_data.values(),
-        key=lambda x: (x.get('count', 0), x.get('last_seen', '')),
-        reverse=True
-    )
+    return "\n".join(lines)
