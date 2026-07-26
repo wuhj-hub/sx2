@@ -79,31 +79,31 @@ def score_vad(closes, highs, lows, amounts, n=14):
 def calc_ovs(closes, amounts, n1=2, n2=4, m=15):
     """
     PV2 = SUM(BSR*ZF*AMO/MA(AMO,N1),N1)*100
-    PV3 = SUM(ZF*AMO/LLV(AMO,M),N2)*100
+    PV3 = SUM(ZF*AMO/LLV(AMO,M),N2)*100  (向量化优化版)
     OV3 = SUM(ZF*AMO,N2)/10060000
     """
     if len(closes) < max(n1, n2, m) + 2:
         return {"pv2": 0, "pv3": 0, "ov3": 0}
     
     c, a = map(_ensure_array, [closes, amounts])
-    zf = np.diff(c) / c[:-1]
+    zf = np.diff(c) / np.maximum(c[:-1], 1e-10)
     zf = np.where(np.isfinite(zf), zf, 0)
     
     if len(zf) < max(n1, n2, m):
         return {"pv2": 0, "pv3": 0, "ov3": 0}
     
-    # PV3 = SUM(ZF*AMO/LLV(AMO,M),N2)*100
-    pv3_vals = []
-    for i in range(len(zf)):
-        start = max(0, i + 1 - m)
-        llv_amo = np.min(a[start:i+2])
-        llv_amo = llv_amo if llv_amo > 0 else 1
-        pv3_vals.append(zf[i] * a[i+1] / llv_amo)
+    # ★ 向量化 PV3 = SUM(ZF*AMO/LLV(AMO,M),N2)*100
+    # LLV(AMO,M) = pandas rolling min, 向后看M天
+    import pandas as pd
+    amo_series = pd.Series(a)
+    llv = amo_series.rolling(window=m, min_periods=1).min().values
+    llv = np.where(llv > 0, llv, 1)
+    # zf 比 a 短1个元素 (diff)
+    pv3_vals = zf * a[1:] / llv[1:]
     pv3 = float(np.sum(pv3_vals[-n2:]) * 100) if len(pv3_vals) >= n2 else 0
     
-    # OV3 = SUM(ZF*AMO,N2)/10060000
-    ov3_vals = [zf[i] * a[i+1] for i in range(len(zf))]
-    ov3 = float(np.sum(ov3_vals[-n2:]) / 10060000) if len(ov3_vals) >= n2 else 0
+    # ★ 向量化 OV3 = SUM(ZF*AMO,N2)/10060000
+    ov3 = float(np.sum(zf[-n2:] * a[-n2:]) / 10060000) if len(zf) >= n2 else 0
     
     return {"pv3": round(pv3, 2), "ov3": round(ov3, 2)}
 

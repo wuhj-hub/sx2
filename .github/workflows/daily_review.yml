@@ -15,6 +15,7 @@ on:
 jobs:
   shuangxian-v2:
     runs-on: ubuntu-latest
+    timeout-minutes: 600  # 最长10小时，防止超过GitHub 6h默认限制
     
     steps:
       - name: 检出代码
