@@ -159,6 +159,101 @@ def get_pool_sorted(year_month: str = None, pool_type: str = "resonance") -> lis
 
     return sorted(
         pool_data.values(),
+        key=lambda x: x.get('count', 0), reverse=True
+    )
+
+
+# ============================================================
+# v2.4 新增：股池轮动报告
+# ============================================================
+
+def get_rotation_report(year_month: str = None) -> dict:
+    """
+    生成月度轮动报告
+    返回: {current_month, prev_month, new_stocks, removed_stocks, stats}
+    """
+    if year_month is None:
+        year_month = datetime.now().strftime('%Y-%m')
+
+    # 当前月
+    current = load_pool(year_month, "resonance")
+    current_div = load_pool(year_month, "divergence")
+    current_codes = set(current.keys()) | set(current_div.keys())
+
+    # 上月
+    year, month = year_month.split("-")
+    prev_y, prev_m = int(year), int(month) - 1
+    if prev_m == 0:
+        prev_y -= 1; prev_m = 12
+    prev_key = f"{prev_y:04d}-{prev_m:02d}"
+    prev = load_pool(prev_key, "resonance")
+    prev_div = load_pool(prev_key, "divergence")
+    prev_codes = set(prev.keys()) | set(prev_div.keys())
+
+    new_codes = current_codes - prev_codes
+    removed_codes = prev_codes - current_codes
+    retained = current_codes & prev_codes
+
+    # 获取详细信息
+    def get_stock_info(codes, pool_dict, div_dict):
+        result = []
+        for c in codes:
+            if c in pool_dict:
+                result.append((c, pool_dict[c].get('name', ''), '共振'))
+            elif c in div_dict:
+                result.append((c, div_dict[c].get('name', ''), '低吸'))
+        return result
+
+    new_info = get_stock_info(new_codes, current, current_div)
+    removed_info = get_stock_info(removed_codes, prev, prev_div)
+
+    total_prev = len(prev_codes)
+    turnover = len(new_codes) / total_prev * 100 if total_prev > 0 else 0
+
+    return {
+        "current_month": year_month,
+        "prev_month": prev_key if prev_codes else None,
+        "current_count": len(current_codes),
+        "prev_count": total_prev,
+        "new_count": len(new_codes),
+        "removed_count": len(removed_codes),
+        "retained_count": len(retained),
+        "turnover": round(turnover, 1),
+        "new_stocks": new_info,
+        "removed_stocks": removed_info,
+    }
+
+
+def format_rotation_report(year_month: str = None) -> str:
+    """生成轮动报告文本"""
+    rotation = get_rotation_report(year_month)
+    if rotation is None:
+        return ""
+
+    ym = rotation['current_month']
+    lines = []
+    lines.append("━" * 35)
+    lines.append(f"🔄 股池轮动报告 ({ym})")
+    lines.append("━" * 35)
+    lines.append(f"\n📊 当前 {rotation['current_count']}只")
+    if rotation['prev_month']:
+        lines.append(f"   上月 {rotation['prev_count']}只 | "
+                     f"新增{rotation['new_count']} | 移除{rotation['removed_count']} | "
+                     f"留存{rotation['retained_count']} | 轮动率{rotation['turnover']}%")
+
+    if rotation['new_stocks']:
+        lines.append(f"\n🆕 本月新增 ({rotation['new_count']}只):")
+        for code, name, stype in rotation['new_stocks'][:10]:
+            icon = "🟢" if stype == "共振" else "📉"
+            lines.append(f"   {icon} {code} {name} ({stype})")
+
+    if rotation['removed_stocks']:
+        lines.append(f"\n🗑️ 较上月移除 ({rotation['removed_count']}只):")
+        for code, name, stype in rotation['removed_stocks'][:10]:
+            lines.append(f"   ❌ {code} {name} ({stype})")
+
+    lines.append("━" * 35)
+    return "\n".join(lines) pool_data.values(),
         key=lambda x: (x.get('count', 0), x.get('last_seen', '')),
         reverse=True
     )

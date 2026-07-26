@@ -5,6 +5,16 @@
 
 ---
 
+## v2.4 (2026-07-26)
+
+### 股池轮动 + 月度自检机制
+
+- `monthly_pool.py`：新增 `get_rotation_report()` / `format_rotation_report()`，支持跨月轮动对比（新增/移除/留存/轮动率）
+- 新增 `monthly_review.py`：月度自检脚本，含系统运行健康检查/股池质量评估/跨月轮动分析/综合改进建议/行动清单
+- 数据源：akshe + tushare 不变，月度股池结构不变（`first_seen` / `last_seen` / `count` 字段）
+
+---
+
 ## v2.3 (2026-07-23)
 
 ### 全量 A 股主板过滤
