@@ -24,6 +24,7 @@ import logging
 import numpy as np
 
 import config
+import beast_scoring
 
 log = logging.getLogger("shuangxian.scoring")
 
@@ -361,7 +362,8 @@ def score_trend_dimension(resonance_score: int, close: float = 0,
 def calculate_stock_score(stock_data: dict, kline_df=None,
                            multi_period: dict = None,
                            resonance_score: int = 0,
-                           is_divergence: bool = False) -> dict:
+                           is_divergence: bool = False,
+                           index_df=None) -> dict:
     """
     计算单只候选股的3维综合评分
     
@@ -420,17 +422,25 @@ def calculate_stock_score(stock_data: dict, kline_df=None,
         ret_20d=ret_20d,
     )
     
-    # ── 加权综合评分 ──
+    # ── 猛兽维度 (v2.4 新增) ──
+    beast_score = beast_scoring.score_beast(kline_df, index_df)
+    
+    # ── 加权综合评分 (含猛兽增强) ──
     w_cap = config.SCORING_WEIGHT_CAPITAL
     w_tech = config.SCORING_WEIGHT_TECH
     w_trend = config.SCORING_WEIGHT_TREND
     
-    total_score = (
+    # 原三维加权分
+    base_score = (
         cap_score['score'] / cap_score['max'] * w_cap * 100 +
         tech_score['score'] / tech_score['max'] * w_tech * 100 +
         trend_score['score'] / trend_score['max'] * w_trend * 100
     )
-    total_score = round(total_score, 1)
+    
+    # 猛兽加分 (0-35分 → 按15%权重加入总分)
+    beast_bonus = beast_score['score'] / beast_score['max'] * 15
+    
+    total_score = round(base_score + beast_bonus, 1)
     
     # 等级评定
     if total_score >= 80:
@@ -446,10 +456,11 @@ def calculate_stock_score(stock_data: dict, kline_df=None,
     
     return {
         'total_score': total_score,
-        'max_score': 100,
+        'max_score': 115,  # 原100 + 猛兽15%权重
         'capital_score': cap_score,
         'tech_score': tech_score,
         'trend_score': trend_score,
+        'beast_score': beast_score,
         'grade': grade,
     }
 
