@@ -1386,63 +1386,76 @@ def get_main_line_sectors(lookback_days: int = 3) -> list:
         log.info(f"  [主线军] 启动板块: {len(sectors)}个, TOP: {[s['sector'] for s in sectors[:3]]}")
         
         # ── 为每个启动板块获取龙头个股 ──
-        # SW_TO_SINA 反向映射：板块名 → Sina节点
-        # 由于Sina板块节点与akshare行业名不完全一致，用akshare的成分股API
         for sector in sectors:
             sector_name = sector['sector']
             leaders = []
             try:
-                # 用akshare获取板块成分股
+                # 方案A：用akshare获取板块成分股
                 cons_df = ak.stock_board_industry_cons_em(symbol=sector_name)
-                if cons_df is not None and not cons_df.empty:
-                    # 获取成分股的代码列表
-                    code_col = next((c for c in cons_df.columns if '代码' in c), cons_df.columns[0])
-                    name_col_stock = next((c for c in cons_df.columns if '名称' in c), cons_df.columns[1])
-                    pct_col_stock = next((c for c in cons_df.columns if '涨跌幅' in c or '最新涨幅' in c), None)
+                if cons_df is None or cons_df.empty:
+                    raise ValueError("akshare成分股为空")
+                # ... 后续处理保持不变
+                code_col = next((c for c in cons_df.columns if '代码' in c), cons_df.columns[0])
+                name_col_stock = next((c for c in cons_df.columns if '名称' in c), cons_df.columns[1])
+                pct_col_stock = next((c for c in cons_df.columns if '涨跌幅' in c or '最新涨幅' in c), None)
+                
+                stock_codes = cons_df[code_col].astype(str).tolist()[:50]
+                
+                for stock_code in stock_codes[:15]:
+                    stock_code = stock_code.zfill(6)
+                    prefix = 'sh' if stock_code.startswith('6') else ('sz' if stock_code.startswith(('0', '3')) else 'bj')
+                    symbol = f"{prefix}{stock_code}"
                     
-                    stock_codes = cons_df[code_col].astype(str).tolist()[:50]  # 取前50只扫描
-                    
-                    # 批量获取沉淀率（只取前10只以减少API调用）
-                    for stock_code in stock_codes[:15]:
-                        stock_code = stock_code.zfill(6)
-                        prefix = 'sh' if stock_code.startswith('6') else ('sz' if stock_code.startswith(('0', '3')) else 'bj')
-                        symbol = f"{prefix}{stock_code}"
-                        
-                        try:
-                            periods = get_stock_fund_flow_periods(stock_code, periods=[3])
-                            if periods.get('sedimentation_rate', 0) > 0:
-                                # 获取涨跌幅（从cons_df中取，或从K线取）
-                                pct = 0
-                                close = 0
-                                stock_row = cons_df[cons_df[code_col].astype(str) == stock_code]
-                                if not stock_row.empty:
-                                    if pct_col_stock:
-                                        pct = _safe_float(stock_row.iloc[0].get(pct_col_stock, 0))
-                                    close_col = next((c for c in cons_df.columns if '最新价' in c or '收盘' in c), None)
-                                    if close_col:
-                                        close = _safe_float(stock_row.iloc[0].get(close_col, 0))
-                                
-                                name_in_board = ''
-                                if not stock_row.empty:
-                                    name_in_board = str(stock_row.iloc[0].get(name_col_stock, ''))
-                                
-                                leaders.append({
-                                    'symbol': symbol,
-                                    'code': stock_code,
-                                    'name': name_in_board,
-                                    'sedimentation_rate': periods['sedimentation_rate'],
-                                    'pct_change': pct,
-                                    'close': close,
-                                    'net_flow_3d': periods.get('3d', 0),
-                                })
-                        except Exception:
-                            continue
-                    
-                    # 按沉淀率降序，取龙头
-                    leaders = sorted(leaders, key=lambda x: x['sedimentation_rate'], reverse=True)[:config.DRAGON_LEADERS_PER_SECTOR]
-                    
-            except Exception as e:
-                log.warning(f"  [主线军] {sector_name} 成分股获取失败: {e}")
+                    try:
+                        periods = get_stock_fund_flow_periods(stock_code, periods=[3])
+                        if periods.get('sedimentation_rate', 0) > 0:
+                            pct = 0
+                            close = 0
+                            stock_row = cons_df[cons_df[code_col].astype(str) == stock_code]
+                            if not stock_row.empty:
+                                if pct_col_stock:
+                                    pct = _safe_float(stock_row.iloc[0].get(pct_col_stock, 0))
+                                close_col = next((c for c in cons_df.columns if '最新价' in c or '收盘' in c), None)
+                                if close_col:
+                                    close = _safe_float(stock_row.iloc[0].get(close_col, 0))
+                            
+                            name_in_board = ''
+                            if not stock_row.empty:
+                                name_in_board = str(stock_row.iloc[0].get(name_col_stock, ''))
+                            
+                            leaders.append({
+                                'symbol': symbol, 'code': stock_code, 'name': name_in_board,
+                                'sedimentation_rate': periods['sedimentation_rate'],
+                                'pct_change': pct, 'close': close,
+                                'net_flow_3d': periods.get('3d', 0),
+                            })
+                    except Exception:
+                        continue
+                
+                leaders = sorted(leaders, key=lambda x: x['sedimentation_rate'], reverse=True)[:config.DRAGON_LEADERS_PER_SECTOR]
+            except Exception:
+                # 方案B：akshare失败 → 用westock查板块领涨股
+                log.info(f"  [主线军] akshare成分股失败，降级westock查{sector_name}领涨股")
+                try:
+                    import subprocess
+                    raw = subprocess.run(
+                        ["npx", "-y", "westock-data-skillhub@1.0.3", "search", "--name", sector_name, "--limit", "5"],
+                        capture_output=True, text=True, timeout=30
+                    )
+                    # 解析返回的表格
+                    lines = [l.strip() for l in raw.stdout.split('\n') if l.strip() and 'GP-A' in l]
+                    for line in lines[:5]:
+                        parts = [p.strip() for p in line.split('|') if p.strip()]
+                        if len(parts) >= 2:
+                            code = parts[0]
+                            name = parts[1]
+                            leaders.append({
+                                'symbol': code, 'code': code.replace('sh','').replace('sz',''),
+                                'name': name, 'sedimentation_rate': 0, 'pct_change': 0, 'close': 0,
+                                'net_flow_3d': 0,
+                            })
+                except Exception as e2:
+                    log.warning(f"  [主线军] westock降级也失败: {e2}")
             
             sector['leaders'] = leaders
             if leaders:
