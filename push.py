@@ -19,6 +19,9 @@ def push_report(report_path: str = None, title: str = "", content: str = ""):
     """推送报告 — PushPlus + Server酱 双通道同时推送"""
     if not content and report_path:
         content = _read_file(report_path)
+    elif report_path and content:
+        # 都提供了：优先推送完整报告文件（markdown完整版）
+        content = _read_full_report(report_path)
     
     push_type = config.PUSH_TYPE.lower()
     
@@ -53,7 +56,7 @@ def _push_pushplus(title: str, content: str) -> bool:
     if not token:
         log.warning("PushPlus token未配置，跳过推送")
         return False
-    url = "http://www.pushplus.plus/send"
+    url = "https://www.pushplus.plus/send"
     data = json.dumps({
         "token": token,
         "title": title,
@@ -103,6 +106,18 @@ def _push_serverchan(title: str, content: str) -> bool:
     except Exception as e:
         log.error(f"Server酱推送异常: {e}")
         return False
+
+
+def _read_full_report(path: str) -> str:
+    """读取完整报告，限制15000字符（PushPlus限制）"""
+    try:
+        with open(path, 'r', encoding='utf-8') as f:
+            content = f.read()
+        if len(content) > 15000:
+            content = content[:15000] + "\n\n> ...（内容过长已截断，完整报告见IMA知识库）"
+        return content
+    except Exception:
+        return ""
 
 
 def _read_file(path: str, max_lines: int = 200) -> str:
