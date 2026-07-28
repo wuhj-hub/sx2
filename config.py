@@ -65,6 +65,10 @@ GATE_MARKET_NORMAL = True       # 市场非冷区(呼吸检查正常/偏热)
 GATE_SECTOR_MATCH = True        # 候选股所属板块当日资金净流入>0
 GATE_INDIVIDUAL_FLOW = True     # 候选股当日主力净流入>0
 
+# ── 运行编号 ────────────────────────────────────────────
+RUN_NUMBER = os.environ.get("RUN_NUMBER", "")
+RUN_TAG = f" sx2#{RUN_NUMBER}" if RUN_NUMBER else ""
+
 # ── 推送配置 ────────────────────────────────────────────
 # 推送通道: both=双通道同时推送 / pushplus=仅PushPlus / serverchan=仅Server酱
 PUSH_TYPE = os.environ.get("PUSH_TYPE", "both")

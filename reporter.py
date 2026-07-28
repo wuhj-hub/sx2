@@ -711,20 +711,21 @@ def generate_push_content(logic_result: dict, flow_result: dict, temperature: di
     # 全量展示，不再按价格筛选，低价股加💰标记
     
     # 标题逻辑
+    run_tag = config.RUN_TAG
     if breath.get('status') == '冷区':
-        title = f"🚨 双弦日报 — 冷区不动"
+        title = f"🚨 双弦日报{run_tag} — 冷区不动"
     elif gated:
         names = [c.get('name', c.get('code', '')) for c in gated[:5]]
-        title = f"🎯 双弦共振 — {len(gated)}只可操作 ({', '.join(names)})"
+        title = f"🎯 双弦共振{run_tag} — {len(gated)}只可操作 ({', '.join(names)})"
     elif divergence_signals:
         div_names = [d.get('name', d.get('code', '')) for d in divergence_signals[:3]]
-        title = f"🔻 双弦日报 — {len(divergence_signals)}只底背离 ({', '.join(div_names)})"
+        title = f"🔻 双弦日报{run_tag} — {len(divergence_signals)}只底背离 ({', '.join(div_names)})"
     else:
-        title = f"📊 双弦日报 — 无共振信号"
+        title = f"📊 双弦日报{run_tag} — 无共振信号"
     
     # 正文
     lines = []
-    lines.append(f"**{date_str} 双弦系统日报 v2.2**")
+    lines.append(f"**{date_str} 双弦系统日报 v2.2{config.RUN_TAG}**")
     lines.append("")
     
     # ── 市场温度（推送首行）──

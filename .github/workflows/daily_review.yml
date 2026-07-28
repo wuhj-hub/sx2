@@ -54,6 +54,7 @@ jobs:
           TUSHARE_TOKEN: ${{ secrets.TUSHARE_TOKEN }}
           OUTPUT_DIR: ./reports
           CACHE_DIR: ./cache
+          RUN_NUMBER: ${{ github.run_number }}
           MAIL_ENABLED: ${{ secrets.MAIL_ENABLED }}
           MAIL_SMTP: ${{ secrets.MAIL_SMTP }}
           MAIL_PORT: ${{ secrets.MAIL_PORT }}
