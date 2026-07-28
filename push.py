@@ -6,6 +6,9 @@
 
 import json
 import logging
+import smtplib
+import email.utils
+from email.mime.text import MIMEText
 import urllib.request
 import urllib.parse
 import os
@@ -16,38 +19,32 @@ log = logging.getLogger("shuangxian.push")
 
 
 def push_report(report_path: str = None, title: str = "", content: str = ""):
-    """推送报告 — PushPlus + Server酱 双通道同时推送"""
+    """推送报告 — PushPlus + Server酱 + 邮件 同时推送"""
     if not content and report_path:
         content = _read_file(report_path)
     elif report_path and content:
-        # 都提供了：优先推送完整报告文件（markdown完整版）
         content = _read_full_report(report_path)
     
     push_type = config.PUSH_TYPE.lower()
     
-    if push_type == "both":
-        # 双通道同时推送
-        results = []
-        results.append(("PushPlus", _push_pushplus(title, content)))
-        results.append(("Server酱", _push_serverchan(title, content)))
-        success = [name for name, ok in results if ok]
-        failed = [name for name, ok in results if not ok]
-        if success:
-            log.info(f"推送成功通道: {', '.join(success)}")
-        if failed:
-            log.warning(f"推送失败通道: {', '.join(failed)}")
-    elif push_type == "pushplus":
-        _push_pushplus(title, content)
-    elif push_type == "serverchan":
-        _push_serverchan(title, content)
-    else:
-        # 控制台输出（调试用）
-        print(f"\n{'='*60}")
-        print(f"{title}")
-        print(f"{'='*60}")
-        print(content)
-        if report_path:
-            print(f"\n📄 报告路径: {report_path}")
+    # 始终添加邮件推送（如果已配置）
+    channels = []
+    
+    if push_type in ("both", "pushplus") and config.PUSHPLUS_TOKEN:
+        channels.append(("PushPlus", _push_pushplus(title, content)))
+    if push_type in ("both", "serverchan") and config.SEND_KEY:
+        channels.append(("Server酱", _push_serverchan(title, content)))
+    if config.MAIL_ENABLED:
+        channels.append(("邮件", _push_email(title, content)))
+    
+    success = [name for name, ok in channels if ok]
+    failed = [name for name, ok in channels if not ok]
+    if success:
+        log.info(f"推送成功通道: {', '.join(success)}")
+    if failed:
+        log.warning(f"推送失败通道: {', '.join(failed)}")
+    if not channels:
+        log.info("无推送通道启用")
 
 
 def _push_pushplus(title: str, content: str) -> bool:
@@ -105,6 +102,29 @@ def _push_serverchan(title: str, content: str) -> bool:
             return False
     except Exception as e:
         log.error(f"Server酱推送异常: {e}")
+        return False
+
+
+def _push_email(title: str, content: str) -> bool:
+    """SMTP邮件推送"""
+    if not config.MAIL_USER or not config.MAIL_PASS or not config.MAIL_TO:
+        log.warning("邮件未配置(需MAIL_USER/MAIL_PASS/MAIL_TO)")
+        return False
+    try:
+        msg = MIMEText(content, "markdown" if content.strip().startswith("#") else "plain", "utf-8")
+        msg["Subject"] = title
+        msg["From"] = email.utils.formataddr(("双弦投资", config.MAIL_USER))
+        msg["To"] = config.MAIL_TO
+        msg["Date"] = email.utils.formatdate(localtime=True)
+        
+        server = smtplib.SMTP_SSL(config.MAIL_SMTP, config.MAIL_PORT, timeout=30)
+        server.login(config.MAIL_USER, config.MAIL_PASS)
+        server.sendmail(config.MAIL_USER, [config.MAIL_TO], msg.as_string())
+        server.quit()
+        log.info(f"邮件推送成功 → {config.MAIL_TO}")
+        return True
+    except Exception as e:
+        log.error(f"邮件推送异常: {e}")
         return False
 
 

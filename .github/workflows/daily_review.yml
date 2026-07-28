@@ -54,6 +54,12 @@ jobs:
           TUSHARE_TOKEN: ${{ secrets.TUSHARE_TOKEN }}
           OUTPUT_DIR: ./reports
           CACHE_DIR: ./cache
+          MAIL_ENABLED: ${{ secrets.MAIL_ENABLED }}
+          MAIL_SMTP: ${{ secrets.MAIL_SMTP }}
+          MAIL_PORT: ${{ secrets.MAIL_PORT }}
+          MAIL_USER: ${{ secrets.MAIL_USER }}
+          MAIL_PASS: ${{ secrets.MAIL_PASS }}
+          MAIL_TO: ${{ secrets.MAIL_TO }}
         run: |
           ARGS=""
           if [ -n "${{ github.event.inputs.target_date }}" ]; then

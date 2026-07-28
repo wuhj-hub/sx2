@@ -74,6 +74,14 @@ PUSHPLUS_TOKEN = os.environ.get("PUSHPLUS_TOKEN", "")
 # Server酱 SendKey
 SEND_KEY = os.environ.get("SEND_KEY", "")
 
+# 邮件推送
+MAIL_ENABLED = os.environ.get("MAIL_ENABLED", "").lower() in ("true", "1", "yes")
+MAIL_SMTP = os.environ.get("MAIL_SMTP", "smtp.qq.com")
+MAIL_PORT = int(os.environ.get("MAIL_PORT", "465"))
+MAIL_USER = os.environ.get("MAIL_USER", "")
+MAIL_PASS = os.environ.get("MAIL_PASS", "")
+MAIL_TO = os.environ.get("MAIL_TO", "")
+
 # ── 输出 ────────────────────────────────────────────────
 OUTPUT_DIR = os.environ.get("OUTPUT_DIR", "./reports")
 REPORT_PREFIX = "shuangxian_v2"
