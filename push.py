@@ -105,13 +105,61 @@ def _push_serverchan(title: str, content: str) -> bool:
         return False
 
 
+def _md_to_html(md: str) -> str:
+    """简单Markdown转HTML（邮件用）"""
+    import html as html_mod
+    lines = md.split('\n')
+    out = []
+    in_table = False
+    for line in lines:
+        if line.startswith('# '):
+            out.append(f'<h1>{html_mod.escape(line[2:])}</h1>')
+        elif line.startswith('## '):
+            out.append(f'<h2>{html_mod.escape(line[3:])}</h2>')
+        elif line.startswith('### '):
+            out.append(f'<h3>{html_mod.escape(line[4:])}</h3>')
+        elif line.startswith('|') and '---' not in line:
+            # 表格行
+            if not in_table:
+                out.append('<table border="1" cellpadding="4" cellspacing="0" style="border-collapse:collapse">')
+                in_table = True
+            cols = [c.strip() for c in line.split('|')[1:-1]]
+            tag = 'th' if out[-1].endswith('</tr>') and '<tr>' in out[-1] else 'td'
+            out.append(f'<tr>{"".join(f"<{tag}>{html_mod.escape(c)}</{tag}>" for c in cols)}</tr>')
+        elif line.strip().startswith('|---') or line.strip().startswith('|:---'):
+            continue
+        elif line.strip().startswith('> '):
+            out.append(f'<blockquote>{html_mod.escape(line[2:])}</blockquote>')
+        elif line.strip().startswith('- '):
+            out.append(f'<li>{html_mod.escape(line[2:])}</li>')
+        elif line.strip().startswith('**') and line.strip().endswith('**'):
+            out.append(f'<p><strong>{html_mod.escape(line.strip()[2:-2])}</strong></p>')
+        elif line.strip() == '':
+            if in_table:
+                out.append('</table>')
+                in_table = False
+            out.append('<br>')
+        elif '---' in line and len(line.strip()) <= 4:
+            out.append('<hr>')
+        else:
+            out.append(f'<p>{html_mod.escape(line)}</p>')
+    if in_table:
+        out.append('</table>')
+    return '\n'.join(out)
+
+
 def _push_email(title: str, content: str) -> bool:
-    """SMTP邮件推送"""
+    """SMTP邮件推送（HTML格式，兼容QQ邮箱）"""
+    import html as html_mod
     if not config.MAIL_USER or not config.MAIL_PASS or not config.MAIL_TO:
         log.warning("邮件未配置(需MAIL_USER/MAIL_PASS/MAIL_TO)")
         return False
     try:
-        msg = MIMEText(content, "markdown" if content.strip().startswith("#") else "plain", "utf-8")
+        html_content = _md_to_html(content)
+        html_body = f"""<html><body style="font-family:'Microsoft YaHei',Arial,sans-serif;font-size:14px;line-height:1.6;color:#333;padding:20px">
+{html_content}
+</body></html>"""
+        msg = MIMEText(html_body, "html", "utf-8")
         msg["Subject"] = title
         msg["From"] = email.utils.formataddr(("双弦投资", config.MAIL_USER))
         msg["To"] = config.MAIL_TO
