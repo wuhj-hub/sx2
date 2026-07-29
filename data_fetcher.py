@@ -1434,26 +1434,69 @@ def get_main_line_sectors(lookback_days: int = 3) -> list:
                 
                 leaders = sorted(leaders, key=lambda x: x['sedimentation_rate'], reverse=True)[:config.DRAGON_LEADERS_PER_SECTOR]
             except Exception:
-                # 方案B：akshare失败 → 用westock查板块领涨股
-                log.info(f"  [主线军] akshare成分股失败，降级westock查{sector_name}领涨股")
+                # 方案B：akshare失败 → 用westock board查板块领涨股
+                log.info(f"  [主线军] akshare成分股失败，降级westock board查{sector_name}领涨股")
                 try:
-                    import subprocess
-                    raw = subprocess.run(
-                        ["npx", "-y", "westock-data-skillhub@1.0.3", "search", "--name", sector_name, "--limit", "5"],
+                    import subprocess as sp
+                    # 获取全板块排行（含leadStock列）
+                    raw = sp.run(
+                        ["npx", "-y", "westock-data-skillhub@1.0.3", "board"],
                         capture_output=True, text=True, timeout=30
                     )
-                    # 解析返回的表格
-                    lines = [l.strip() for l in raw.stdout.split('\n') if l.strip() and 'GP-A' in l]
-                    for line in lines[:5]:
-                        parts = [p.strip() for p in line.split('|') if p.strip()]
-                        if len(parts) >= 2:
-                            code = parts[0]
-                            name = parts[1]
-                            leaders.append({
-                                'symbol': code, 'code': code.replace('sh','').replace('sz',''),
-                                'name': name, 'sedimentation_rate': 0, 'pct_change': 0, 'close': 0,
-                                'net_flow_3d': 0,
-                            })
+                    # 在行业板块和概念板块中搜索匹配sector_name的行
+                    found = False
+                    for line in raw.stdout.split('\n'):
+                        if '|' not in line or '---' in line or 'name |' in line:
+                            continue
+                        parts = [p.strip() for p in line.split('|')[1:-1]]
+                        if len(parts) >= 6:
+                            board_name = parts[0]
+                            lead_stock_raw = parts[5]  # 格式: "全通教育(20.05)"
+                            if sector_name in board_name and lead_stock_raw:
+                                # 解析领涨股名称
+                                lead_name = lead_stock_raw.split('(')[0].strip()
+                                # 通过westock search获取股票代码
+                                code_raw = sp.run(
+                                    ["npx", "-y", "westock-data-skillhub@1.0.3", "search", lead_name],
+                                    capture_output=True, text=True, timeout=15
+                                )
+                                lead_code = ""
+                                for cl in code_raw.stdout.split('\n'):
+                                    if '|' in cl and f' {lead_name}' in cl:
+                                        parts_c = [p.strip() for p in cl.split('|')[1:-1]]
+                                        if parts_c:
+                                            c = parts_c[0]
+                                            lead_code = c.replace('sh','').replace('sz','').replace('bj','')
+                                            break
+                                if lead_code:
+                                    leaders.append({
+                                        'symbol': f"{'sh' if lead_code.startswith(('6','9')) else 'sz'}{lead_code}",
+                                        'code': lead_code, 'name': lead_name,
+                                        'sedimentation_rate': 0, 'pct_change': 0, 'close': 0,
+                                        'net_flow_3d': 0,
+                                    })
+                                    found = True
+                                    log.info(f"    westock board找到领涨股: {lead_name}({lead_code})")
+                                    break
+                    if not found:
+                        # 最后兜底：用westock search --name搜板块名
+                        raw2 = sp.run(
+                            ["npx", "-y", "westock-data-skillhub@1.0.3", "search", "--name", sector_name, "--limit", "3"],
+                            capture_output=True, text=True, timeout=15
+                        )
+                        for line in raw2.stdout.split('\n'):
+                            if 'GP-A' in line or 'GP-A-KCB' in line:
+                                parts = [p.strip() for p in line.split('|')[1:-1]]
+                                if len(parts) >= 2:
+                                    c = parts[0].replace('sh','').replace('sz','').replace('bj','')
+                                    n = parts[1]
+                                    leaders.append({
+                                        'symbol': f"{'sh' if c.startswith(('6','9')) else 'sz'}{c}",
+                                        'code': c, 'name': n,
+                                        'sedimentation_rate': 0, 'pct_change': 0, 'close': 0,
+                                        'net_flow_3d': 0,
+                                    })
+                                    log.info(f"    westock search兜底找到: {n}({c})")
                 except Exception as e2:
                     log.warning(f"  [主线军] westock降级也失败: {e2}")
             
