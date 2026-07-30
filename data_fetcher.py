@@ -1438,21 +1438,57 @@ def get_main_line_sectors(lookback_days: int = 3) -> list:
                 log.info(f"  [主线军] akshare成分股失败，降级westock board查{sector_name}领涨股")
                 try:
                     import subprocess as sp
+                    # 东财板块名 → westock板块名映射
+                    # akshare资金流使用东方财富行业分类，westock board使用申万行业分类
+                    SECTOR_NAME_MAP = {
+                        "金融行业": ["银行", "证券Ⅱ", "保险Ⅱ", "多元金融"],
+                        "酿酒行业": ["白酒Ⅱ", "饮料乳品"],
+                        "汽车制造": ["乘用车", "商用车", "汽车零部件"],
+                        "电子元件": ["元件", "半导体"],
+                        "电子器件": ["半导体", "元件"],
+                        "电子信息": ["软件开发", "IT服务Ⅱ", "计算机设备"],
+                        "生物制药": ["化学制药", "中药Ⅱ", "生物制品"],
+                        "家电行业": ["家电零部件Ⅱ", "白色家电", "厨卫电器"],
+                        "机械行业": ["通用设备", "专用设备", "自动化设备"],
+                        "化工行业": ["化学制品", "化学原料", "橡胶"],
+                        "钢铁行业": ["钢铁"],
+                        "有色金属": ["工业金属", "贵金属", "小金属"],
+                        "煤炭行业": ["煤炭开采", "焦炭Ⅱ"],
+                        "房地产": ["房地产开发", "房地产服务"],
+                        "纺织服装": ["服装家纺", "纺织制造"],
+                        "食品饮料": ["食品加工", "饮料乳品", "休闲食品"],
+                        "医药生物": ["化学制药", "中药Ⅱ", "生物制品", "医疗器械"],
+                        "电力行业": ["电力", "电网设备"],
+                        "输配电气": ["电网设备", "电力"],
+                        "通讯行业": ["通信设备", "通信服务"],
+                        "文化传媒": ["游戏Ⅱ", "影视院线", "广告媒体"],
+                        "农牧饲渔": ["养殖业", "种植业", "饲料"],
+                        "商业百货": ["一般零售", "专业连锁Ⅱ"],
+                        "航天航空": ["航空装备Ⅱ", "航天装备Ⅱ"],
+                        "船舶制造": ["航海装备Ⅱ"],
+                    }
                     # 获取全板块排行（含leadStock列）
                     raw = sp.run(
                         ["npx", "-y", "westock-data-skillhub@1.0.3", "board"],
                         capture_output=True, text=True, timeout=30
                     )
-                    # 在行业板块和概念板块中搜索匹配sector_name的行
-                    found = False
+                    # 获取所有westock板块行
+                    board_lines = []
                     for line in raw.stdout.split('\n'):
                         if '|' not in line or '---' in line or 'name |' in line:
                             continue
                         parts = [p.strip() for p in line.split('|')[1:-1]]
                         if len(parts) >= 6:
-                            board_name = parts[0]
-                            lead_stock_raw = parts[5]  # 格式: "全通教育(20.05)"
-                            if sector_name in board_name and lead_stock_raw:
+                            board_lines.append(parts)
+                    
+                    # 尝试用映射表匹配
+                    search_names = SECTOR_NAME_MAP.get(sector_name, [sector_name])
+                    found = False
+                    for board_parts in board_lines:
+                        board_name = board_parts[0]
+                        lead_stock_raw = board_parts[5]
+                        # 检查是否在搜索列表中
+                        if any(sn in board_name for sn in search_names) and lead_stock_raw:
                                 # 解析领涨股名称
                                 lead_name = lead_stock_raw.split('(')[0].strip()
                                 # 通过westock search获取股票代码
