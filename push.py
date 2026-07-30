@@ -22,7 +22,11 @@ def push_report(report_path: str = None, title: str = "", content: str = ""):
     """推送报告 — PushPlus + Server酱 + 邮件 同时推送"""
     if not content and report_path:
         content = _read_file(report_path)
-    elif report_path and content:
+    elif content:
+        # content已由调用方生成（reporter.py的摘要），直接使用
+        if len(content) > 9000:
+            content = content[:9000] + "\n\n> ...（内容过长已截断，完整报告见IMA知识库）"
+    elif report_path:
         content = _read_full_report(report_path)
     
     push_type = config.PUSH_TYPE.lower()
@@ -181,8 +185,8 @@ def _read_full_report(path: str) -> str:
     try:
         with open(path, 'r', encoding='utf-8') as f:
             content = f.read()
-        if len(content) > 15000:
-            content = content[:15000] + "\n\n> ...（内容过长已截断，完整报告见IMA知识库）"
+        if len(content) > 9000:
+            content = content[:9000] + "\n\n> ...（内容过长已截断，完整报告见IMA知识库）"
         return content
     except Exception:
         return ""
